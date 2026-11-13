@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: LicenseRef-AGPL-3.0-only-OpenSSL
 
 import UIKit
+import AVKit
+import CoreMedia
 import GameController
 import SwiftUI
 
@@ -26,8 +28,33 @@ final class StreamViewController: GCEventViewController {
 		LogStore.shared.append(level: 16, "StreamViewController released")
 	}
 
+	override func viewDidAppear(_ animated: Bool) {
+		super.viewDidAppear(animated)
+		requestMatchingDisplayMode()
+	}
+
+	/// Ask tvOS to switch the TV to the stream's frame rate and SDR, if the user turned on
+	/// Settings › Video and Audio › Match Content. That skips 4K/HDR upscaling and tone mapping
+	/// on the Apple TV, and the TV's often slower HDR picture modes.
+	private func requestMatchingDisplayMode() {
+		guard let manager = view.window?.avDisplayManager else { return }
+		guard manager.isDisplayCriteriaMatchingEnabled else {
+			LogStore.shared.append(level: 4, "Display: Match Content is off in tvOS settings, keeping the current output mode")
+			return
+		}
+		var format: CMVideoFormatDescription?
+		let size = session.videoSize
+		CMVideoFormatDescriptionCreate(allocator: kCFAllocatorDefault,
+			codecType: session.isHEVC ? kCMVideoCodecType_HEVC : kCMVideoCodecType_H264,
+			width: Int32(size.width), height: Int32(size.height), extensions: nil, formatDescriptionOut: &format)
+		guard let format else { return }
+		manager.preferredDisplayCriteria = AVDisplayCriteria(refreshRate: Float(session.fps), formatDescription: format)
+		LogStore.shared.append(level: 4, "Display: requested \(size.width)x\(size.height) SDR @ \(session.fps) Hz")
+	}
+
 	override func viewWillDisappear(_ animated: Bool) {
 		super.viewWillDisappear(animated)
+		view.window?.avDisplayManager.preferredDisplayCriteria = nil
 		// Hand controller input back to UIKit, otherwise the menus stop responding after the stream
 		controllerUserInteractionEnabled = true
 	}

@@ -14,6 +14,10 @@ final class ControllerInput {
 	var onQuitRequested: (() -> Void)?
 
 	private var controller: GCController?
+	/// Controller callbacks run here instead of the main queue, so input is never stuck behind UI work.
+	/// lastState and quitComboArmed are only touched on this queue.
+	private let inputQueue = DispatchQueue(label: "chiaki.controller-input", qos: .userInteractive)
+	private var remotes: [GCController] = []
 	private var lastState = ChiakiControllerState()
 	private var quitComboArmed = true
 	private var observers: [NSObjectProtocol] = []
@@ -25,15 +29,28 @@ final class ControllerInput {
 		let nc = NotificationCenter.default
 		observers.append(nc.addObserver(forName: .GCControllerDidConnect, object: nil, queue: .main) { [weak self] note in
 			guard let self, let c = note.object as? GCController else { return }
-			if self.controller == nil || self.controller?.extendedGamepad == nil { self.attach(c) }
+			if c.extendedGamepad != nil && self.controller == nil { self.attach(c) }
 		})
 		observers.append(nc.addObserver(forName: .GCControllerDidDisconnect, object: nil, queue: .main) { [weak self] note in
 			guard let self, let c = note.object as? GCController, c === self.controller else { return }
 			self.detach()
 			if let next = GCController.controllers().first(where: { $0.extendedGamepad != nil }) { self.attach(next) }
 		})
-		if let c = GCController.controllers().first(where: { $0.extendedGamepad != nil }) ?? GCController.controllers().first {
+		observers.append(nc.addObserver(forName: .GCControllerDidConnect, object: nil, queue: .main) { [weak self] note in
+			if let c = note.object as? GCController { self?.watchRemote(c) }
+		})
+		GCController.controllers().forEach(watchRemote)
+		if let c = GCController.controllers().first(where: { $0.extendedGamepad != nil }) {
 			attach(c)
+		}
+	}
+
+	/// The Siri Remote's Back button ends the stream, whichever gamepad is playing.
+	private func watchRemote(_ c: GCController) {
+		guard c.extendedGamepad == nil, let micro = c.microGamepad, !remotes.contains(where: { $0 === c }) else { return }
+		remotes.append(c)
+		micro.buttonMenu.pressedChangedHandler = { [weak self] _, _, pressed in
+			if pressed { self?.onQuitRequested?() }
 		}
 	}
 
@@ -41,6 +58,7 @@ final class ControllerInput {
 		LogStore.shared.append(level: 16, "ControllerInput released")
 		observers.forEach { NotificationCenter.default.removeObserver($0) }
 		detach()
+		for r in remotes { r.microGamepad?.buttonMenu.pressedChangedHandler = nil }
 	}
 
 	var controllerName: String? { controller?.vendorName }
@@ -49,20 +67,15 @@ final class ControllerInput {
 		detach()
 		controller = c
 		LogStore.shared.append(level: 4, "Controller: \(c.vendorName ?? "unknown") (\(c.extendedGamepad != nil ? "extended" : "micro"))")
-		if let gp = c.extendedGamepad {
-			gp.valueChangedHandler = { [weak self] gp, _ in self?.update(gp) }
-			setupHaptics(c)
-		} else if let micro = c.microGamepad {
-			// Siri Remote: Menu/Back ends the stream
-			micro.buttonMenu.pressedChangedHandler = { [weak self] _, _, pressed in
-				if pressed { self?.onQuitRequested?() }
-			}
-		}
+		guard let gp = c.extendedGamepad else { return }
+		c.handlerQueue = inputQueue
+		gp.valueChangedHandler = { [weak self] gp, _ in self?.update(gp) }
+		setupHaptics(c)
 	}
 
 	private func detach() {
 		controller?.extendedGamepad?.valueChangedHandler = nil
-		controller?.microGamepad?.buttonMenu.pressedChangedHandler = nil
+		controller?.handlerQueue = .main
 		controller = nil
 		rumblePlayers.removeAll()
 		hapticEngines.forEach { $0.stop() }
@@ -115,7 +128,7 @@ final class ControllerInput {
 		if buttons & quitCombo == quitCombo {
 			if quitComboArmed {
 				quitComboArmed = false
-				onQuitRequested?()
+				DispatchQueue.main.async { [weak self] in self?.onQuitRequested?() }
 			}
 		} else {
 			quitComboArmed = true

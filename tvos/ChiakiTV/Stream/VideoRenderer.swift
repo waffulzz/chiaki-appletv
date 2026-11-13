@@ -3,37 +3,55 @@
 import AVFoundation
 import CoreMedia
 import UIKit
+import VideoToolbox
 
-/// Turns the Annex-B H.264/H.265 access units chiaki-lib hands out into CMSampleBuffers
-/// and feeds them to an AVSampleBufferDisplayLayer, which decodes them in hardware.
+/// Turns the Annex-B H.264/H.265 access units chiaki-lib hands out into frames on screen.
+///
+/// Frames are decoded with our own real-time VTDecompressionSession (synchronously, on chiaki's
+/// video thread) and the decoded image is handed to an AVSampleBufferDisplayLayer marked
+/// "display immediately". That keeps the layer from queueing compressed frames and lets us
+/// measure decode time.
 final class VideoRenderer {
 	let displayLayer = AVSampleBufferDisplayLayer()
 
 	private let hevc: Bool
 	private var formatDescription: CMVideoFormatDescription?
+	private var decompressionSession: VTDecompressionSession?
 	private var vps: [UInt8]?
 	private var sps: [UInt8]?
 	private var pps: [UInt8]?
 	private(set) var framesDecoded = 0
 
+	// Stats, logged every few seconds (only touched on the video thread)
+	private var statsStart = CACurrentMediaTime()
+	private var statsFrames = 0
+	private var statsDecodeTotal = 0.0
+	private var statsDecodeMax = 0.0
+	private var statsGapMax = 0.0
+	private var statsLost = 0
+	private var lastSubmit = 0.0
+	private var decodeStart = 0.0
+
 	init(hevc: Bool) {
 		self.hevc = hevc
 		displayLayer.videoGravity = .resizeAspect
 		displayLayer.backgroundColor = UIColor.black.cgColor
-		var timebase: CMTimebase?
-		CMTimebaseCreateWithSourceClock(allocator: kCFAllocatorDefault, sourceClock: CMClockGetHostTimeClock(), timebaseOut: &timebase)
-		if let timebase {
-			CMTimebaseSetTime(timebase, time: .zero)
-			CMTimebaseSetRate(timebase, rate: 1.0)
-			displayLayer.controlTimebase = timebase
-		}
+	}
+
+	deinit {
+		if let decompressionSession { VTDecompressionSessionInvalidate(decompressionSession) }
 	}
 
 	private var renderer: AVSampleBufferVideoRenderer { displayLayer.sampleBufferRenderer }
 
 	/// Called on chiaki's video thread. Returns false when the frame could not be used,
 	/// which makes chiaki-lib ask the console for a new keyframe.
-	func submit(_ buf: UnsafePointer<UInt8>, _ size: Int) -> Bool {
+	func submit(_ buf: UnsafePointer<UInt8>, _ size: Int, framesLost: Int32 = 0) -> Bool {
+		let now = CACurrentMediaTime()
+		if lastSubmit > 0 { statsGapMax = max(statsGapMax, now - lastSubmit) }
+		lastSubmit = now
+		statsLost += Int(max(0, framesLost))
+
 		var units: [UnsafeBufferPointer<UInt8>] = []
 		var parametersChanged = false
 
@@ -59,23 +77,119 @@ final class VideoRenderer {
 
 		if parametersChanged || formatDescription == nil {
 			formatDescription = makeFormatDescription()
+			resetDecompressionSession()
 		}
 		guard let formatDescription else { return false }
 		guard !units.isEmpty else { return true }
 		guard let sample = makeSampleBuffer(units, formatDescription) else { return false }
 
+		if decompressionSession == nil {
+			makeDecompressionSession(formatDescription)
+		}
+		guard let decompressionSession else { return false }
+
 		if renderer.status == .failed {
 			LogStore.shared.append(level: 2, "Video renderer failed: \(String(describing: renderer.error)), flushing")
 			renderer.flush()
+		}
+
+		// No kVTDecodeFrame_EnableAsynchronousDecompression: the output callback has run when this returns
+		decodeStart = CACurrentMediaTime()
+		let status = VTDecompressionSessionDecodeFrame(decompressionSession, sampleBuffer: sample,
+			flags: [._1xRealTimePlayback], frameRefcon: nil, infoFlagsOut: nil)
+		if status != noErr {
+			LogStore.shared.append(level: 2, "Video decode failed: \(status)")
+			if status == kVTInvalidSessionErr {
+				// The session dies when the app is suspended; rebuild it on the next keyframe
+				resetDecompressionSession()
+			}
 			return false
 		}
-		renderer.enqueue(sample)
-		framesDecoded += 1
+		logStatsIfDue()
 		return true
 	}
 
 	func flush() {
 		renderer.flush(removingDisplayedImage: true, completionHandler: nil)
+	}
+
+	// MARK: - Decoding
+
+	private func resetDecompressionSession() {
+		if let decompressionSession {
+			VTDecompressionSessionInvalidate(decompressionSession)
+			self.decompressionSession = nil
+		}
+	}
+
+	private func makeDecompressionSession(_ format: CMVideoFormatDescription) {
+		let imageAttributes: [CFString: Any] = [kCVPixelBufferIOSurfacePropertiesKey: [:] as CFDictionary]
+		var callback = VTDecompressionOutputCallbackRecord(
+			decompressionOutputCallback: { refCon, _, status, _, imageBuffer, _, _ in
+				guard let refCon else { return }
+				let renderer = Unmanaged<VideoRenderer>.fromOpaque(refCon).takeUnretainedValue()
+				renderer.decoded(status: status, imageBuffer: imageBuffer)
+			},
+			decompressionOutputRefCon: Unmanaged.passUnretained(self).toOpaque())
+		var session: VTDecompressionSession?
+		let status = VTDecompressionSessionCreate(allocator: kCFAllocatorDefault, formatDescription: format,
+			decoderSpecification: nil, imageBufferAttributes: imageAttributes as CFDictionary,
+			outputCallback: &callback, decompressionSessionOut: &session)
+		guard status == noErr, let session else {
+			LogStore.shared.append(level: 1, "Failed to create video decoder: \(status)")
+			return
+		}
+		VTSessionSetProperty(session, key: kVTDecompressionPropertyKey_RealTime, value: kCFBooleanTrue)
+		decompressionSession = session
+	}
+
+	private func decoded(status: OSStatus, imageBuffer: CVImageBuffer?) {
+		let decodeTime = CACurrentMediaTime() - decodeStart
+		guard status == noErr, let imageBuffer else {
+			if status != noErr { LogStore.shared.append(level: 2, "Video decoder error: \(status)") }
+			return
+		}
+		var format: CMVideoFormatDescription?
+		CMVideoFormatDescriptionCreateForImageBuffer(allocator: kCFAllocatorDefault, imageBuffer: imageBuffer, formatDescriptionOut: &format)
+		guard let format else { return }
+		var timing = CMSampleTimingInfo(duration: .invalid, presentationTimeStamp: CMClockGetTime(CMClockGetHostTimeClock()), decodeTimeStamp: .invalid)
+		var sample: CMSampleBuffer?
+		CMSampleBufferCreateReadyWithImageBuffer(allocator: kCFAllocatorDefault, imageBuffer: imageBuffer,
+			formatDescription: format, sampleTiming: &timing, sampleBufferOut: &sample)
+		guard let sample else { return }
+		Self.markDisplayImmediately(sample)
+		renderer.enqueue(sample)
+
+		framesDecoded += 1
+		statsFrames += 1
+		statsDecodeTotal += decodeTime
+		statsDecodeMax = max(statsDecodeMax, decodeTime)
+	}
+
+	private func logStatsIfDue() {
+		let now = CACurrentMediaTime()
+		let elapsed = now - statsStart
+		guard elapsed >= 5 else { return }
+		let fps = Double(statsFrames) / elapsed
+		let avg = statsFrames > 0 ? statsDecodeTotal / Double(statsFrames) * 1000 : 0
+		LogStore.shared.append(level: 4, String(format: "Video stats: %.1f fps, decode avg %.2f ms max %.2f ms, longest gap between frames %.1f ms, frames lost %d",
+			fps, avg, statsDecodeMax * 1000, statsGapMax * 1000, statsLost))
+		statsStart = now
+		statsFrames = 0
+		statsDecodeTotal = 0
+		statsDecodeMax = 0
+		statsGapMax = 0
+		statsLost = 0
+	}
+
+	private static func markDisplayImmediately(_ sample: CMSampleBuffer) {
+		if let attachments = CMSampleBufferGetSampleAttachmentsArray(sample, createIfNecessary: true),
+		   CFArrayGetCount(attachments) > 0 {
+			let dict = unsafeBitCast(CFArrayGetValueAtIndex(attachments, 0), to: CFMutableDictionary.self)
+			CFDictionarySetValue(dict,
+				Unmanaged.passUnretained(kCMSampleAttachmentKey_DisplayImmediately).toOpaque(),
+				Unmanaged.passUnretained(kCFBooleanTrue).toOpaque())
+		}
 	}
 
 	private func update(_ slot: inout [UInt8]?, _ nal: UnsafeBufferPointer<UInt8>) -> Bool {
@@ -159,13 +273,6 @@ final class VideoRenderer {
 			sampleSizeEntryCount: 1, sampleSizeArray: &sampleSize, sampleBufferOut: &sample) == noErr,
 		      let sample else { return nil }
 
-		if let attachments = CMSampleBufferGetSampleAttachmentsArray(sample, createIfNecessary: true),
-		   CFArrayGetCount(attachments) > 0 {
-			let dict = unsafeBitCast(CFArrayGetValueAtIndex(attachments, 0), to: CFMutableDictionary.self)
-			CFDictionarySetValue(dict,
-				Unmanaged.passUnretained(kCMSampleAttachmentKey_DisplayImmediately).toOpaque(),
-				Unmanaged.passUnretained(kCFBooleanTrue).toOpaque())
-		}
 		return sample
 	}
 

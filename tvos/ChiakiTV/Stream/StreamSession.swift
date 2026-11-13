@@ -20,6 +20,9 @@ final class StreamSession {
 	private let console: RegisteredConsole
 	private let address: String
 	private let settings: (resolution: Resolution, fps: Int, codec: VideoCodec, bitrate: UInt32)
+	var fps: Int { settings.fps }
+	var videoSize: (width: UInt32, height: UInt32) { settings.resolution.size }
+	var isHEVC: Bool { settings.codec == .h265 }
 
 	init(console: RegisteredConsole, address: String, settings: StreamSettings) {
 		self.console = console
@@ -49,10 +52,10 @@ final class StreamSession {
 		info.enable_dualsense = true
 
 		var callbacks = ChiakiTVCallbacks()
-		callbacks.video = { buf, size, _, _, user in
+		callbacks.video = { buf, size, framesLost, _, user in
 			guard let buf, let user else { return false }
 			let s = Unmanaged<StreamSession>.fromOpaque(user).takeUnretainedValue()
-			return s.video.submit(buf, size)
+			return s.video.submit(buf, size, framesLost: framesLost)
 		}
 		callbacks.audio_settings = { channels, rate, user in
 			guard let user else { return }

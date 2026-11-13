@@ -39,10 +39,8 @@ final class LogStore: ObservableObject {
 		case CHIAKITV_LOG_WARNING.rawValue: logger.warning("\(text, privacy: .public)")
 		default: logger.info("\(text, privacy: .public)")
 		}
-		#if DEBUG
 		// Visible with `xcrun devicectl device process launch --console`
 		fputs("[chiaki] \(text)\n", stderr)
-		#endif
 		lock.lock()
 		pending.append(Line(id: nextID, level: level, text: text))
 		nextID += 1
