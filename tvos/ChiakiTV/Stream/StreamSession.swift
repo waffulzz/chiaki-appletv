@@ -9,6 +9,8 @@ final class StreamSession {
 		case connected
 		case loginPINRequested(incorrect: Bool)
 		case quit(error: Bool, reason: String)
+		case keyboardOpen(text: String)
+		case keyboardRemoteClose
 	}
 
 	let video: VideoRenderer
@@ -21,6 +23,7 @@ final class StreamSession {
 	private let address: String
 	private let settings: (resolution: Resolution, fps: Int, codec: VideoCodec, bitrate: UInt32)
 	var fps: Int { settings.fps }
+	var isPS5: Bool { console.isPS5 }
 	var videoSize: (width: UInt32, height: UInt32) { settings.resolution.size }
 	var isHEVC: Bool { settings.codec == .h265 }
 
@@ -50,6 +53,7 @@ final class StreamSession {
 		info.bitrate = settings.bitrate
 		info.codec = Int32(settings.codec.rawValue)
 		info.enable_dualsense = true
+		info.enable_keyboard = true
 
 		var callbacks = ChiakiTVCallbacks()
 		callbacks.video = { buf, size, framesLost, _, user in
@@ -78,7 +82,12 @@ final class StreamSession {
 				let reason = e.quit_reason_str.map { String(cString: $0) } ?? "Unknown"
 				let isError = e.quit_is_error
 				DispatchQueue.main.async { s.onEvent?(.quit(error: isError, reason: reason)) }
-			case Int32(CHIAKITV_EVENT_RUMBLE.rawValue):
+			case Int32(CHIAKITV_EVENT_KEYBOARD_OPEN.rawValue):
+				let text = e.keyboard_text.map { String(cString: $0) } ?? ""
+				DispatchQueue.main.async { s.onEvent?(.keyboardOpen(text: text)) }
+			case Int32(CHIAKITV_EVENT_KEYBOARD_REMOTE_CLOSE.rawValue):
+				DispatchQueue.main.async { s.onEvent?(.keyboardRemoteClose) }
+			case Int32(CHIAKITV_EVENT_RUMBLE.rawValue), Int32(CHIAKITV_EVENT_HAPTIC_RUMBLE.rawValue):
 				let l = e.rumble_left, r = e.rumble_right
 				DispatchQueue.main.async { s.onRumble?(l, r) }
 			default:
@@ -108,6 +117,17 @@ final class StreamSession {
 	func setLoginPIN(_ pin: String) {
 		guard let handle else { return }
 		pin.withCString { chiakitv_session_set_login_pin(handle, $0) }
+	}
+
+	/// Sends the text for the console's on-screen keyboard and confirms it (accept), or cancels it.
+	func finishKeyboard(text: String?) {
+		guard let handle else { return }
+		if let text {
+			text.withCString { chiakitv_session_keyboard_set_text(handle, $0) }
+			chiakitv_session_keyboard_accept(handle)
+		} else {
+			chiakitv_session_keyboard_reject(handle)
+		}
 	}
 
 	/// Puts the console into rest mode, then disconnects.

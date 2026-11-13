@@ -95,6 +95,7 @@ final class StreamViewController: GCEventViewController {
 			statusLabel.widthAnchor.constraint(lessThanOrEqualTo: view.widthAnchor, multiplier: 0.8),
 		])
 
+		input.isPS5 = session.isPS5
 		input.onStateChange = { [weak self] state in self?.session.setControllerState(state) }
 		input.onQuitRequested = { [weak self] in self?.confirmQuit() }
 		session.onRumble = { [weak self] l, r in self?.input.rumble(left: l, right: r) }
@@ -137,6 +138,48 @@ final class StreamViewController: GCEventViewController {
 			askForLoginPIN(incorrect: incorrect)
 		case .quit(let error, let reason):
 			finish(error: error ? reason : nil)
+		case .keyboardOpen(let text):
+			showKeyboard(text: text)
+		case .keyboardRemoteClose:
+			if let alert = keyboardAlert {
+				keyboardAlert = nil
+				alert.dismiss(animated: true)
+				controllerUserInteractionEnabled = false
+			}
+		}
+	}
+
+	private weak var keyboardAlert: UIAlertController?
+
+	/// The console asked for text: use tvOS's own keyboard (with iPhone keyboard support)
+	/// instead of the console's on-screen one, then send the result back.
+	private func showKeyboard(text: String) {
+		guard !finished else { return }
+		keyboardAlert?.dismiss(animated: false)
+		controllerUserInteractionEnabled = true
+		let alert = UIAlertController(title: "Enter Text", message: nil, preferredStyle: .alert)
+		alert.addTextField { field in
+			field.text = text
+			field.autocapitalizationType = .sentences
+		}
+		alert.addAction(UIAlertAction(title: "Done", style: .default) { [weak self, weak alert] _ in
+			self?.session.finishKeyboard(text: alert?.textFields?.first?.text ?? "")
+			self?.controllerUserInteractionEnabled = false
+		})
+		alert.addAction(UIAlertAction(title: "Cancel", style: .cancel) { [weak self] _ in
+			self?.session.finishKeyboard(text: nil)
+			self?.controllerUserInteractionEnabled = false
+		})
+		keyboardAlert = alert
+		let present: () -> Void = { [weak self] in
+			self?.present(alert, animated: true) {
+				alert.textFields?.first?.becomeFirstResponder() // straight to the keyboard
+			}
+		}
+		if let shown = presentedViewController, shown !== alert {
+			shown.dismiss(animated: false, completion: present)
+		} else {
+			present()
 		}
 	}
 

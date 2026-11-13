@@ -6,12 +6,15 @@ import ChiakiTVBridge
 
 /// Maps a GameController gamepad (DualSense, DualShock 4, Xbox, MFi) onto ChiakiControllerState.
 ///
-/// tvOS reserves the controller's Home/PS button for the system, so:
+/// System gestures on the controller (Home/PS, Create long-press) are switched off while
+/// streaming, which Apple allows for game streaming apps. If tvOS still keeps the PS button:
 ///  - Options + Share (Create) together sends the PS button
 ///  - L1 + R1 + L3 + R3 together asks to end the stream
 final class ControllerInput {
 	var onStateChange: ((ChiakiControllerState) -> Void)?
 	var onQuitRequested: (() -> Void)?
+	/// Touchpad coordinates differ between the PS5 (DualSense) and PS4 (DualShock 4)
+	var isPS5 = true
 
 	private var controller: GCController?
 	/// Controller callbacks run here instead of the main queue, so input is never stuck behind UI work.
@@ -21,11 +24,22 @@ final class ControllerInput {
 	private var lastState = ChiakiControllerState()
 	private var quitComboArmed = true
 	private var observers: [NSObjectProtocol] = []
+	// Touchpad (input queue only): touches and touch_id_next live here between updates
+	private var touchState = ChiakiControllerState()
+	private var touchIDs: [Int8] = [-1, -1]
+	/// A mute/microphone button, if the controller exposes one, acts as the PS button
+	private var extraPSPressed = false
+	private var gestureElements: [GCControllerElement] = []
+	// Rumble (main queue only)
 	private var hapticEngines: [CHHapticEngine] = []
-	private var rumblePlayers: [CHHapticAdvancedPatternPlayer] = []
+	// Standard players only: on tvOS 26+ the haptics service refuses advanced players (error 4097)
+	private var rumblePlayers: [CHHapticPatternPlayer] = []
+	private var rumblePlaying: [Bool] = []
+	private var lastHapticsAttempt: CFTimeInterval = 0
 
 	init() {
 		chiaki_controller_state_set_idle(&lastState)
+		chiaki_controller_state_set_idle(&touchState)
 		let nc = NotificationCenter.default
 		observers.append(nc.addObserver(forName: .GCControllerDidConnect, object: nil, queue: .main) { [weak self] note in
 			guard let self, let c = note.object as? GCController else { return }
@@ -68,21 +82,55 @@ final class ControllerInput {
 		controller = c
 		LogStore.shared.append(level: 4, "Controller: \(c.vendorName ?? "unknown") (\(c.extendedGamepad != nil ? "extended" : "micro"))")
 		guard let gp = c.extendedGamepad else { return }
+		disableSystemGestures(c)
 		c.handlerQueue = inputQueue
-		gp.valueChangedHandler = { [weak self] gp, _ in self?.update(gp) }
-		setupHaptics(c)
+		gp.valueChangedHandler = { [weak self] gp, element in self?.update(gp, element: element) }
 	}
 
 	private func detach() {
 		controller?.extendedGamepad?.valueChangedHandler = nil
 		controller?.handlerQueue = .main
+		for e in gestureElements { e.preferredSystemGestureState = .enabled }
+		gestureElements.removeAll()
 		controller = nil
-		rumblePlayers.removeAll()
-		hapticEngines.forEach { $0.stop() }
-		hapticEngines.removeAll()
+		stopHaptics()
 	}
 
-	private func update(_ gp: GCExtendedGamepad) {
+	/// Let the PS/Home and Create buttons reach the console instead of tvOS gestures
+	/// (Control Center, screenshots). Apple documents this for game streaming apps.
+	private func disableSystemGestures(_ c: GCController) {
+		let profile = c.physicalInputProfile
+		var names: [String] = []
+		for element in profile.allElements where element.isBoundToSystemGesture {
+			element.preferredSystemGestureState = .disabled
+			gestureElements.append(element)
+			names.append(element.localizedName ?? element.unmappedLocalizedName ?? "?")
+		}
+		LogStore.shared.append(level: 4, "Controller system gestures disabled for: \(names.isEmpty ? "none" : names.joined(separator: ", "))")
+		LogStore.shared.append(level: 4, "Controller buttons: \(profile.buttons.keys.sorted().joined(separator: ", "))")
+	}
+
+	private static let knownButtonNames: Set<String> = [
+		GCInputButtonA, GCInputButtonB, GCInputButtonX, GCInputButtonY, GCInputButtonMenu, GCInputButtonOptions,
+		GCInputButtonHome, GCInputButtonShare, GCInputLeftShoulder, GCInputRightShoulder, GCInputLeftTrigger,
+		GCInputRightTrigger, GCInputLeftThumbstickButton, GCInputRightThumbstickButton, GCInputDualShockTouchpadButton,
+	]
+
+	/// Logs buttons outside the standard set (to spot e.g. a mute button) and maps a mute/microphone one to PS.
+	private func handleExtraButton(_ element: GCControllerElement) {
+		guard let button = element as? GCControllerButtonInput else { return }
+		let names = button.aliases
+		guard names.isDisjoint(with: Self.knownButtonNames) else { return }
+		let label = names.sorted().joined(separator: "/")
+		if button.isPressed { LogStore.shared.append(level: 4, "Controller: extra button pressed: \(label)") }
+		if names.contains(where: { $0.localizedCaseInsensitiveContains("mute") || $0.localizedCaseInsensitiveContains("microphone") }) {
+			extraPSPressed = button.isPressed
+		}
+	}
+
+	private func update(_ gp: GCExtendedGamepad, element: GCControllerElement) {
+		handleExtraButton(element)
+		updateTouches(gp)
 		var s = ChiakiControllerState()
 		chiaki_controller_state_set_idle(&s)
 		var buttons: UInt32 = 0
@@ -109,7 +157,7 @@ final class ControllerInput {
 			if options { buttons |= CHIAKI_CONTROLLER_BUTTON_OPTIONS.rawValue }
 			if share { buttons |= CHIAKI_CONTROLLER_BUTTON_SHARE.rawValue }
 		}
-		if gp.buttonHome?.isPressed == true { buttons |= CHIAKI_CONTROLLER_BUTTON_PS.rawValue }
+		if gp.buttonHome?.isPressed == true || extraPSPressed { buttons |= CHIAKI_CONTROLLER_BUTTON_PS.rawValue }
 		if let ds = gp as? GCDualSenseGamepad, ds.touchpadButton.isPressed {
 			buttons |= CHIAKI_CONTROLLER_BUTTON_TOUCHPAD.rawValue
 		} else if let ds4 = gp as? GCDualShockGamepad, ds4.touchpadButton.isPressed {
@@ -122,6 +170,8 @@ final class ControllerInput {
 		s.left_y = Self.axis(-gp.leftThumbstick.yAxis.value)
 		s.right_x = Self.axis(gp.rightThumbstick.xAxis.value)
 		s.right_y = Self.axis(-gp.rightThumbstick.yAxis.value)
+		s.touches = touchState.touches
+		s.touch_id_next = touchState.touch_id_next
 
 		let quitCombo = CHIAKI_CONTROLLER_BUTTON_L1.rawValue | CHIAKI_CONTROLLER_BUTTON_R1.rawValue
 			| CHIAKI_CONTROLLER_BUTTON_L3.rawValue | CHIAKI_CONTROLLER_BUTTON_R3.rawValue
@@ -140,45 +190,122 @@ final class ControllerInput {
 		}
 	}
 
+	/// DualSense/DualShock touchpad fingers (-1...1, y up) to PS touchpad touches.
+	/// GameController reports (0, 0) when a finger is lifted.
+	private func updateTouches(_ gp: GCExtendedGamepad) {
+		let pads: [GCControllerDirectionPad]
+		if let ds = gp as? GCDualSenseGamepad {
+			pads = [ds.touchpadPrimary, ds.touchpadSecondary]
+		} else if let ds4 = gp as? GCDualShockGamepad {
+			pads = [ds4.touchpadPrimary, ds4.touchpadSecondary]
+		} else {
+			return
+		}
+		let maxX: Float = isPS5 ? 1919 : 1920
+		let maxY: Float = isPS5 ? 1079 : 942
+		for (i, pad) in pads.enumerated() {
+			let x = pad.xAxis.value, y = pad.yAxis.value
+			let px = UInt16(max(0, min(maxX, (x + 1) / 2 * maxX)))
+			let py = UInt16(max(0, min(maxY, (1 - y) / 2 * maxY)))
+			if x != 0 || y != 0 {
+				if touchIDs[i] < 0 {
+					touchIDs[i] = chiaki_controller_state_start_touch(&touchState, px, py)
+				} else {
+					chiaki_controller_state_set_touch_pos(&touchState, UInt8(touchIDs[i]), px, py)
+				}
+			} else if touchIDs[i] >= 0 {
+				chiaki_controller_state_stop_touch(&touchState, UInt8(touchIDs[i]))
+				touchIDs[i] = -1
+			}
+		}
+	}
+
 	private static func axis(_ v: Float) -> Int16 {
 		Int16(max(-1, min(1, v)) * 32767)
 	}
 
 	// MARK: - Rumble
 
-	private func setupHaptics(_ c: GCController) {
-		guard let haptics = c.haptics else { return }
-		for locality in [GCHapticsLocality.leftHandle, .rightHandle] {
-			guard haptics.supportedLocalities.contains(locality),
-			      let engine = haptics.createEngine(withLocality: locality) else { continue }
+	/// Engines are created on the first rumble rather than at attach time, and creation is
+	/// retried: the controller haptics service is not always reachable right away.
+	private func startHaptics() {
+		guard let c = controller, let haptics = c.haptics else { return }
+		let now = CACurrentMediaTime()
+		guard now - lastHapticsAttempt > 2 else { return }
+		lastHapticsAttempt = now
+		let supported = haptics.supportedLocalities
+		LogStore.shared.append(level: 4, "Haptics: supported localities \(supported.map { $0.rawValue }.sorted())")
+		var candidates: [[GCHapticsLocality]] = []
+		if supported.contains(.leftHandle) && supported.contains(.rightHandle) { candidates.append([.leftHandle, .rightHandle]) }
+		if supported.contains(.handles) { candidates.append([.handles]) }
+		candidates.append([.default])
+		for localities in candidates {
+			var engines: [CHHapticEngine] = []
+			var players: [CHHapticPatternPlayer] = []
 			do {
-				try engine.start()
-				let event = CHHapticEvent(eventType: .hapticContinuous, parameters: [
-					CHHapticEventParameter(parameterID: .hapticIntensity, value: 1.0),
-				], relativeTime: 0, duration: 100)
-				let pattern = try CHHapticPattern(events: [event], parameters: [])
-				let player = try engine.makeAdvancedPlayer(with: pattern)
-				hapticEngines.append(engine)
-				rumblePlayers.append(player)
+				for locality in localities {
+					guard let engine = haptics.createEngine(withLocality: locality) else { throw CocoaError(.featureUnsupported) }
+					engine.playsHapticsOnly = true
+					engine.isAutoShutdownEnabled = false
+					engine.stoppedHandler = { [weak self] reason in
+						LogStore.shared.append(level: 2, "Haptics engine stopped: \(reason.rawValue)")
+						DispatchQueue.main.async { self?.stopHaptics() }
+					}
+					engine.resetHandler = { [weak self] in DispatchQueue.main.async { self?.stopHaptics() } }
+					try engine.start()
+					let event = CHHapticEvent(eventType: .hapticContinuous, parameters: [
+						CHHapticEventParameter(parameterID: .hapticIntensity, value: 1.0),
+						CHHapticEventParameter(parameterID: .hapticSharpness, value: locality == .rightHandle ? 0.8 : 0.3),
+					], relativeTime: 0, duration: 1000)
+					players.append(try engine.makePlayer(with: CHHapticPattern(events: [event], parameters: [])))
+					engines.append(engine)
+				}
+				hapticEngines = engines
+				rumblePlayers = players
+				rumblePlaying = Array(repeating: false, count: players.count)
+				LogStore.shared.append(level: 4, "Haptics: ready (\(localities.map { $0.rawValue }.joined(separator: ", ")))")
+				return
 			} catch {
-				LogStore.shared.append(level: 2, "Haptics unavailable: \(error)")
+				engines.forEach { $0.stop() }
+				LogStore.shared.append(level: 2, "Haptics: \(localities.map { $0.rawValue }.joined(separator: ", ")) failed: \(error)")
 			}
 		}
 	}
 
-	/// left = low frequency (left handle), right = high frequency (right handle), 0...255
+	private func stopHaptics() {
+		rumblePlayers.removeAll()
+		rumblePlaying.removeAll()
+		hapticEngines.forEach { $0.stop() }
+		hapticEngines.removeAll()
+	}
+
+	/// left = low frequency (left handle), right = high frequency (right handle), 0...255. Main queue.
 	func rumble(left: UInt8, right: UInt8) {
+		if rumblePlayers.isEmpty {
+			guard left > 0 || right > 0 else { return }
+			startHaptics()
+		}
 		for (i, player) in rumblePlayers.enumerated() {
-			let value = Float(i == 0 ? left : right) / 255
+			// One engine (both handles): follow the stronger motor
+			let raw = rumblePlayers.count == 1 ? max(left, right) : (i == 0 ? left : right)
+			let value = Float(raw) / 255
 			do {
 				if value <= 0 {
-					try player.stop(atTime: CHHapticTimeImmediate)
+					if rumblePlaying[i] {
+						try player.stop(atTime: CHHapticTimeImmediate)
+						rumblePlaying[i] = false
+					}
 				} else {
 					try player.sendParameters([CHHapticDynamicParameter(parameterID: .hapticIntensityControl, value: value, relativeTime: 0)], atTime: CHHapticTimeImmediate)
-					try player.start(atTime: CHHapticTimeImmediate)
+					if !rumblePlaying[i] {
+						try player.start(atTime: CHHapticTimeImmediate)
+						rumblePlaying[i] = true
+					}
 				}
 			} catch {
-				// Haptics are best-effort
+				LogStore.shared.append(level: 2, "Haptics: playback failed: \(error)")
+				stopHaptics()
+				return
 			}
 		}
 	}

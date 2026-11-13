@@ -277,7 +277,53 @@ struct ChiakiTVSession
 	ChiakiTVCallbacks cb;
 	char *host;
 	bool stopped;
+	// DualSense haptics -> rumble (see haptics_frame_cb)
+	uint32_t haptic_sum_left;
+	uint32_t haptic_sum_right;
+	unsigned haptic_packets;
+	bool haptic_on;
 };
+
+#define HAPTIC_PACKETS_PER_RUMBLE 3 // 10 ms packets, so one rumble update every 30 ms
+#define HAPTIC_RUMBLE_MIN_STRENGTH 100
+
+/// With DualSense features on, the PS5 sends vibration as 3 kHz stereo 16-bit "haptic audio"
+/// instead of rumble events. Like the desktop GUI, turn its loudness into rumble strength.
+static void haptics_frame_cb(uint8_t *buf, size_t buf_size, void *user)
+{
+	ChiakiTVSession *s = user;
+	const size_t sample_size = 2 * sizeof(int16_t);
+	if(!s->cb.event || buf_size < sample_size)
+		return;
+	size_t count = buf_size / sample_size;
+	uint32_t sum_left = 0, sum_right = 0;
+	for(size_t i = 0; i < count; i++)
+	{
+		int16_t l, r;
+		memcpy(&l, buf + i * sample_size, sizeof(l));
+		memcpy(&r, buf + i * sample_size + sizeof(l), sizeof(r));
+		sum_left += (uint32_t)abs(l) * 2;
+		sum_right += (uint32_t)abs(r) * 2;
+	}
+	uint32_t left = sum_left / count, right = sum_right / count;
+	s->haptic_sum_left += left > HAPTIC_RUMBLE_MIN_STRENGTH ? left : 0;
+	s->haptic_sum_right += right > HAPTIC_RUMBLE_MIN_STRENGTH ? right : 0;
+	if(++s->haptic_packets < HAPTIC_PACKETS_PER_RUMBLE)
+		return;
+	uint32_t avg_left = s->haptic_sum_left / HAPTIC_PACKETS_PER_RUMBLE;
+	uint32_t avg_right = s->haptic_sum_right / HAPTIC_PACKETS_PER_RUMBLE;
+	s->haptic_sum_left = s->haptic_sum_right = 0;
+	s->haptic_packets = 0;
+	bool on = avg_left > 0 || avg_right > 0;
+	if(!on && !s->haptic_on)
+		return; // stay quiet while idle, but send one "off" after activity
+	s->haptic_on = on;
+	ChiakiTVEvent e = { 0 };
+	e.type = CHIAKITV_EVENT_HAPTIC_RUMBLE;
+	e.rumble_left = (uint8_t)((avg_left > 0xffff ? 0xffff : avg_left) >> 8);
+	e.rumble_right = (uint8_t)((avg_right > 0xffff ? 0xffff : avg_right) >> 8);
+	s->cb.event(&e, s->cb.user);
+}
 
 static void session_event_cb(ChiakiEvent *event, void *user)
 {
@@ -308,6 +354,17 @@ static void session_event_cb(ChiakiEvent *event, void *user)
 		case CHIAKI_EVENT_NICKNAME_RECEIVED:
 			e.type = CHIAKITV_EVENT_NICKNAME;
 			e.nickname = event->server_nickname;
+			break;
+		case CHIAKI_EVENT_KEYBOARD_OPEN:
+			e.type = CHIAKITV_EVENT_KEYBOARD_OPEN;
+			e.keyboard_text = event->keyboard.text_str;
+			break;
+		case CHIAKI_EVENT_KEYBOARD_TEXT_CHANGE:
+			e.type = CHIAKITV_EVENT_KEYBOARD_TEXT_CHANGE;
+			e.keyboard_text = event->keyboard.text_str;
+			break;
+		case CHIAKI_EVENT_KEYBOARD_REMOTE_CLOSE:
+			e.type = CHIAKITV_EVENT_KEYBOARD_REMOTE_CLOSE;
 			break;
 		case CHIAKI_EVENT_LED_COLOR:
 			e.type = CHIAKITV_EVENT_LED_COLOR;
@@ -361,7 +418,7 @@ ChiakiTVSession *chiakitv_session_start(const ChiakiTVConnectInfo *info, const C
 	ci.video_profile.bitrate = info->bitrate;
 	ci.video_profile.codec = info->ps5 ? (ChiakiCodec)info->codec : CHIAKI_CODEC_H264;
 	ci.video_profile_auto_downgrade = true;
-	ci.enable_keyboard = false;
+	ci.enable_keyboard = info->enable_keyboard;
 	ci.enable_dualsense = info->enable_dualsense;
 	ci.audio_video_disabled = 0;
 	ci.auto_regist = false;
@@ -386,6 +443,10 @@ ChiakiTVSession *chiakitv_session_start(const ChiakiTVConnectInfo *info, const C
 	ChiakiAudioSink audio_sink;
 	chiaki_opus_decoder_get_sink(&s->opus, &audio_sink);
 	chiaki_session_set_audio_sink(&s->session, &audio_sink);
+	ChiakiAudioSink haptics_sink = { 0 };
+	haptics_sink.user = s;
+	haptics_sink.frame_cb = haptics_frame_cb;
+	chiaki_session_set_haptics_sink(&s->session, &haptics_sink);
 	chiaki_session_set_event_cb(&s->session, session_event_cb, s);
 	chiaki_session_set_video_sample_cb(&s->session, session_video_cb, s);
 
@@ -447,4 +508,22 @@ void chiakitv_session_goto_bed(ChiakiTVSession *s)
 {
 	if(s)
 		chiaki_session_goto_bed(&s->session);
+}
+
+void chiakitv_session_keyboard_set_text(ChiakiTVSession *s, const char *text)
+{
+	if(s && text)
+		chiaki_session_keyboard_set_text(&s->session, text);
+}
+
+void chiakitv_session_keyboard_accept(ChiakiTVSession *s)
+{
+	if(s)
+		chiaki_session_keyboard_accept(&s->session);
+}
+
+void chiakitv_session_keyboard_reject(ChiakiTVSession *s)
+{
+	if(s)
+		chiaki_session_keyboard_reject(&s->session);
 }

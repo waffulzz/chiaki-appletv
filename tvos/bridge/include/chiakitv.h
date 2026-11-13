@@ -110,6 +110,7 @@ typedef struct {
 	unsigned int bitrate; // kbit/s
 	int codec; // ChiakiTVCodec, ignored (forced to H264) for PS4
 	bool enable_dualsense;
+	bool enable_keyboard; // let the console hand text entry to the client (KEYBOARD_* events)
 } ChiakiTVConnectInfo;
 
 typedef enum {
@@ -118,7 +119,15 @@ typedef enum {
 	CHIAKITV_EVENT_QUIT = 2,
 	CHIAKITV_EVENT_RUMBLE = 3,
 	CHIAKITV_EVENT_NICKNAME = 4,
-	CHIAKITV_EVENT_LED_COLOR = 5
+	CHIAKITV_EVENT_LED_COLOR = 5,
+	/// rumble_left/right derived from the DualSense haptic audio stream (sent every 30 ms while active)
+	CHIAKITV_EVENT_HAPTIC_RUMBLE = 6,
+	/// The console opened its on-screen keyboard; keyboard_text is the current text (may be NULL).
+	/// Answer with chiakitv_session_keyboard_set_text + _accept, or _reject.
+	CHIAKITV_EVENT_KEYBOARD_OPEN = 7,
+	CHIAKITV_EVENT_KEYBOARD_TEXT_CHANGE = 8,
+	/// The console closed the keyboard itself
+	CHIAKITV_EVENT_KEYBOARD_REMOTE_CLOSE = 9
 } ChiakiTVEventType;
 
 typedef struct {
@@ -131,6 +140,7 @@ typedef struct {
 	uint8_t rumble_right;
 	uint8_t led[3];
 	const char *nickname;
+	const char *keyboard_text; // valid during the callback only
 } ChiakiTVEvent;
 
 /// Return false to report the frame as corrupt (the console then sends a new keyframe).
@@ -158,6 +168,9 @@ void chiakitv_session_set_controller_state(ChiakiTVSession *session, const Chiak
 void chiakitv_session_set_login_pin(ChiakiTVSession *session, const char *pin);
 void chiakitv_session_request_idr(ChiakiTVSession *session);
 void chiakitv_session_goto_bed(ChiakiTVSession *session);
+void chiakitv_session_keyboard_set_text(ChiakiTVSession *session, const char *text);
+void chiakitv_session_keyboard_accept(ChiakiTVSession *session);
+void chiakitv_session_keyboard_reject(ChiakiTVSession *session);
 
 #ifdef __cplusplus
 }
