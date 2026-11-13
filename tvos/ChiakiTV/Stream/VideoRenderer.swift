@@ -13,6 +13,10 @@ import VideoToolbox
 /// measure decode time.
 final class VideoRenderer {
 	let displayLayer = AVSampleBufferDisplayLayer()
+	/// When set, decoded frames are drawn with Metal instead of going to displayLayer.
+	let metal: MetalVideoRenderer?
+	/// Latest stats line, for the on-screen overlay (written on the video thread).
+	private(set) var statsText = ""
 
 	private let hevc: Bool
 	private var formatDescription: CMVideoFormatDescription?
@@ -32,8 +36,12 @@ final class VideoRenderer {
 	private var lastSubmit = 0.0
 	private var decodeStart = 0.0
 
-	init(hevc: Bool) {
+	init(hevc: Bool, useMetal: Bool = false) {
 		self.hevc = hevc
+		self.metal = useMetal ? MetalVideoRenderer() : nil
+		if useMetal && metal == nil {
+			LogStore.shared.append(level: 2, "Metal unavailable, using the system video layer")
+		}
 		displayLayer.videoGravity = .resizeAspect
 		displayLayer.backgroundColor = UIColor.black.cgColor
 	}
@@ -123,7 +131,9 @@ final class VideoRenderer {
 	}
 
 	private func makeDecompressionSession(_ format: CMVideoFormatDescription) {
-		let imageAttributes: [CFString: Any] = [kCVPixelBufferIOSurfacePropertiesKey: [:] as CFDictionary]
+		let imageAttributes: [CFString: Any] = metal != nil
+			? MetalVideoRenderer.pixelBufferAttributes
+			: [kCVPixelBufferIOSurfacePropertiesKey: [:] as CFDictionary]
 		var callback = VTDecompressionOutputCallbackRecord(
 			decompressionOutputCallback: { refCon, _, status, _, imageBuffer, _, _ in
 				guard let refCon else { return }
@@ -149,6 +159,14 @@ final class VideoRenderer {
 			if status != noErr { LogStore.shared.append(level: 2, "Video decoder error: \(status)") }
 			return
 		}
+		framesDecoded += 1
+		statsFrames += 1
+		statsDecodeTotal += decodeTime
+		statsDecodeMax = max(statsDecodeMax, decodeTime)
+		if let metal {
+			metal.render(imageBuffer)
+			return
+		}
 		var format: CMVideoFormatDescription?
 		CMVideoFormatDescriptionCreateForImageBuffer(allocator: kCFAllocatorDefault, imageBuffer: imageBuffer, formatDescriptionOut: &format)
 		guard let format else { return }
@@ -159,21 +177,18 @@ final class VideoRenderer {
 		guard let sample else { return }
 		Self.markDisplayImmediately(sample)
 		renderer.enqueue(sample)
-
-		framesDecoded += 1
-		statsFrames += 1
-		statsDecodeTotal += decodeTime
-		statsDecodeMax = max(statsDecodeMax, decodeTime)
 	}
 
 	private func logStatsIfDue() {
 		let now = CACurrentMediaTime()
 		let elapsed = now - statsStart
-		guard elapsed >= 5 else { return }
+		guard elapsed >= 2 else { return }
 		let fps = Double(statsFrames) / elapsed
 		let avg = statsFrames > 0 ? statsDecodeTotal / Double(statsFrames) * 1000 : 0
-		LogStore.shared.append(level: 4, String(format: "Video stats: %.1f fps, decode avg %.2f ms max %.2f ms, longest gap between frames %.1f ms, frames lost %d",
-			fps, avg, statsDecodeMax * 1000, statsGapMax * 1000, statsLost))
+		let text = String(format: "%@ · %.1f fps · decode %.1f ms (max %.1f) · longest frame gap %.0f ms · lost %d",
+			metal != nil ? "Metal" : "Video layer", fps, avg, statsDecodeMax * 1000, statsGapMax * 1000, statsLost)
+		statsText = text
+		LogStore.shared.append(level: 4, "Video stats: " + text)
 		statsStart = now
 		statsFrames = 0
 		statsDecodeTotal = 0

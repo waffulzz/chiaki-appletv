@@ -17,7 +17,7 @@ final class VideoTestViewController: UIViewController {
 
 	init(path: String) {
 		let hevc = path.hasSuffix(".h265") || path.hasSuffix(".hevc")
-		renderer = VideoRenderer(hevc: hevc)
+		renderer = VideoRenderer(hevc: hevc, useMetal: UserDefaults.standard.object(forKey: "useMetalRenderer") as? Bool ?? true)
 		let data = (try? Data(contentsOf: URL(fileURLWithPath: path))) ?? Data()
 		units = Self.splitAccessUnits(data, hevc: hevc)
 		super.init(nibName: nil, bundle: nil)
@@ -29,7 +29,7 @@ final class VideoTestViewController: UIViewController {
 	override func viewDidLoad() {
 		super.viewDidLoad()
 		view.backgroundColor = .black
-		view.layer.addSublayer(renderer.displayLayer)
+		view.layer.addSublayer(renderer.metal?.layer ?? renderer.displayLayer)
 		let link = CADisplayLink(target: self, selector: #selector(tick))
 		link.preferredFramesPerSecond = 60
 		link.add(to: .main, forMode: .common)
@@ -38,7 +38,11 @@ final class VideoTestViewController: UIViewController {
 
 	override func viewDidLayoutSubviews() {
 		super.viewDidLayoutSubviews()
-		renderer.displayLayer.frame = view.bounds
+		if let metal = renderer.metal {
+			metal.layout(bounds: view.bounds, scale: view.window?.screen.scale ?? UIScreen.main.scale)
+		} else {
+			renderer.displayLayer.frame = view.bounds
+		}
 	}
 
 	@objc private func tick() {

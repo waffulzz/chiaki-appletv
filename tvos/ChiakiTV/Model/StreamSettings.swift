@@ -48,6 +48,10 @@ final class StreamSettings: ObservableObject {
 	@Published var codec: VideoCodec { didSet { defaults.set(codec.rawValue, forKey: "codec") } }
 	@Published var bitrate: Int { didSet { defaults.set(bitrate, forKey: "bitrate") } } // 0 = automatic
 	@Published var psnAccountID: String { didSet { defaults.set(psnAccountID, forKey: "psnAccountID") } }
+	/// Draw frames with Metal (lowest latency) instead of AVSampleBufferDisplayLayer
+	@Published var useMetalRenderer: Bool { didSet { defaults.set(useMetalRenderer, forKey: "useMetalRenderer") } }
+	/// Show the stick echo and video stats while streaming
+	@Published var showLatencyOverlay: Bool { didSet { defaults.set(showLatencyOverlay, forKey: "showLatencyOverlay") } }
 
 	init() {
 		resolution = Resolution(rawValue: defaults.integer(forKey: "resolution")) ?? .p1080
@@ -57,6 +61,8 @@ final class StreamSettings: ObservableObject {
 		codec = (defaults.object(forKey: "codec") as? Int).flatMap(VideoCodec.init(rawValue:)) ?? .h265
 		bitrate = defaults.integer(forKey: "bitrate")
 		psnAccountID = defaults.string(forKey: "psnAccountID") ?? ""
+		useMetalRenderer = defaults.object(forKey: "useMetalRenderer") as? Bool ?? true
+		showLatencyOverlay = defaults.object(forKey: "showLatencyOverlay") as? Bool ?? false
 	}
 
 	var effectiveBitrate: UInt32 { bitrate > 0 ? UInt32(bitrate) : resolution.defaultBitrate }

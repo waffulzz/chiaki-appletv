@@ -12,6 +12,8 @@ import ChiakiTVBridge
 final class ControllerInput {
 	var onStateChange: ((ChiakiControllerState) -> Void)?
 	var onQuitRequested: (() -> Void)?
+	/// Left stick position (-1...1, y up), called on the main queue, for the latency overlay
+	var onLeftStick: ((Float, Float) -> Void)?
 
 	private var controller: GCController?
 	/// Controller callbacks run here instead of the main queue, so input is never stuck behind UI work.
@@ -132,6 +134,11 @@ final class ControllerInput {
 			}
 		} else {
 			quitComboArmed = true
+		}
+
+		if let onLeftStick {
+			let x = gp.leftThumbstick.xAxis.value, y = gp.leftThumbstick.yAxis.value
+			DispatchQueue.main.async { onLeftStick(x, y) }
 		}
 
 		if !chiaki_controller_state_equals(&s, &lastState) {

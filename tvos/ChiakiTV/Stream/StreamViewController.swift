@@ -12,12 +12,15 @@ final class StreamViewController: GCEventViewController {
 	private let session: StreamSession
 	private let input = ControllerInput()
 	private let statusLabel = UILabel()
+	private let overlay: LatencyOverlayView?
+	private var overlayTimer: Timer?
 	private let onFinished: (String?) -> Void
 	private var finished = false
 	private var connected = false
 
 	init(console: RegisteredConsole, address: String, settings: StreamSettings, onFinished: @escaping (String?) -> Void) {
 		self.session = StreamSession(console: console, address: address, settings: settings)
+		self.overlay = settings.showLatencyOverlay ? LatencyOverlayView() : nil
 		self.onFinished = onFinished
 		super.init(nibName: nil, bundle: nil)
 	}
@@ -63,7 +66,24 @@ final class StreamViewController: GCEventViewController {
 		super.viewDidLoad()
 		view.backgroundColor = .black
 		controllerUserInteractionEnabled = false
-		view.layer.addSublayer(session.video.displayLayer)
+		if let metal = session.video.metal {
+			view.layer.addSublayer(metal.layer)
+		} else {
+			view.layer.addSublayer(session.video.displayLayer)
+		}
+		if let overlay {
+			overlay.translatesAutoresizingMaskIntoConstraints = false
+			view.addSubview(overlay)
+			NSLayoutConstraint.activate([
+				overlay.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 60),
+				overlay.bottomAnchor.constraint(equalTo: view.bottomAnchor, constant: -60),
+			])
+			input.onLeftStick = { [weak overlay] x, y in overlay?.setStick(x: x, y: y) }
+			overlayTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
+				guard let self else { return }
+				self.overlay?.setStats(self.session.video.statsText)
+			}
+		}
 
 		statusLabel.text = "Connecting…"
 		statusLabel.textColor = .white
@@ -93,7 +113,11 @@ final class StreamViewController: GCEventViewController {
 
 	override func viewDidLayoutSubviews() {
 		super.viewDidLayoutSubviews()
-		session.video.displayLayer.frame = view.bounds
+		if let metal = session.video.metal {
+			metal.layout(bounds: view.bounds, scale: view.window?.screen.scale ?? UIScreen.main.scale)
+		} else {
+			session.video.displayLayer.frame = view.bounds
+		}
 	}
 
 	override func pressesBegan(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
@@ -152,6 +176,8 @@ final class StreamViewController: GCEventViewController {
 	private func finish(error: String?) {
 		guard !finished else { return }
 		finished = true
+		overlayTimer?.invalidate()
+		overlayTimer = nil
 		controllerUserInteractionEnabled = true
 		if let error { LogStore.shared.append(level: 1, "Stream ended: \(error)") }
 		statusLabel.isHidden = false
@@ -159,6 +185,58 @@ final class StreamViewController: GCEventViewController {
 		session.stop { [weak self] in
 			self?.onFinished(error)
 		}
+	}
+}
+
+/// Debug overlay: a dot that follows the left stick (drawn locally, so it shows the Apple TV/TV
+/// part of the delay on its own) and the latest video stats.
+final class LatencyOverlayView: UIView {
+	private let box = UIView()
+	private let dot = UIView()
+	private let stats = UILabel()
+	private let boxSize: CGFloat = 160
+
+	init() {
+		super.init(frame: .zero)
+		backgroundColor = UIColor.black.withAlphaComponent(0.5)
+		layer.cornerRadius = 16
+		box.layer.borderColor = UIColor.white.withAlphaComponent(0.6).cgColor
+		box.layer.borderWidth = 2
+		box.translatesAutoresizingMaskIntoConstraints = false
+		dot.backgroundColor = .systemGreen
+		dot.frame = CGRect(x: 0, y: 0, width: 24, height: 24)
+		dot.layer.cornerRadius = 12
+		box.addSubview(dot)
+		stats.font = .monospacedSystemFont(ofSize: 22, weight: .regular)
+		stats.textColor = .white
+		stats.numberOfLines = 2
+		stats.text = "Waiting for video…"
+		stats.translatesAutoresizingMaskIntoConstraints = false
+		addSubview(box)
+		addSubview(stats)
+		NSLayoutConstraint.activate([
+			box.widthAnchor.constraint(equalToConstant: boxSize),
+			box.heightAnchor.constraint(equalToConstant: boxSize),
+			box.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 16),
+			box.topAnchor.constraint(equalTo: topAnchor, constant: 16),
+			box.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -16),
+			stats.leadingAnchor.constraint(equalTo: box.trailingAnchor, constant: 20),
+			stats.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -20),
+			stats.centerYAnchor.constraint(equalTo: centerYAnchor),
+			stats.widthAnchor.constraint(lessThanOrEqualToConstant: 900),
+		])
+		setStick(x: 0, y: 0)
+	}
+
+	required init?(coder: NSCoder) { fatalError() }
+
+	func setStick(x: Float, y: Float) {
+		let r = boxSize / 2 - 12
+		dot.center = CGPoint(x: boxSize / 2 + CGFloat(x) * r, y: boxSize / 2 - CGFloat(y) * r)
+	}
+
+	func setStats(_ text: String) {
+		if !text.isEmpty { stats.text = text }
 	}
 }
 
