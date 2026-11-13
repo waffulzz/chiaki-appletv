@@ -24,14 +24,6 @@ struct SettingsView: View {
 					ForEach([5000, 10000, 15000, 20000, 30000, 40000, 50000], id: \.self) { Text("\($0 / 1000) Mbps").tag($0) }
 				}
 			}
-			Section {
-				Toggle("Metal Renderer", isOn: $settings.useMetalRenderer)
-				Toggle("Latency Overlay", isOn: $settings.showLatencyOverlay)
-			} header: {
-				Text("Latency")
-			} footer: {
-				Text("The Metal renderer shows each frame as soon as it is decoded. The overlay draws a dot that follows your left stick locally, plus video stats: if the dot lags too, the delay is in the TV or Apple TV (try your TV's Game Mode), not the stream.")
-			}
 			Section("PSN") {
 				TextField("Account-ID (base64)", text: $settings.psnAccountID)
 					.textInputAutocapitalization(.never)

@@ -29,7 +29,7 @@ final class StreamSession {
 		self.address = address
 		let codec: VideoCodec = console.isPS5 ? settings.codec : .h264
 		self.settings = (settings.resolution, settings.fps, codec, settings.effectiveBitrate)
-		self.video = VideoRenderer(hevc: codec == .h265, useMetal: settings.useMetalRenderer)
+		self.video = VideoRenderer(hevc: codec == .h265)
 	}
 
 	deinit {
