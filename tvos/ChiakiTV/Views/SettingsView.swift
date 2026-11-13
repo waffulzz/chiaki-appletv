@@ -9,20 +9,15 @@ struct SettingsView: View {
 	var body: some View {
 		Form {
 			Section("Video") {
-				Picker("Resolution", selection: $settings.resolution) {
-					ForEach(Resolution.allCases) { Text($0.label).tag($0) }
-				}
-				Picker("Frame Rate", selection: $settings.fps) {
-					Text("30 fps").tag(30)
-					Text("60 fps").tag(60)
-				}
-				Picker("Codec", selection: $settings.codec) {
-					ForEach(VideoCodec.allCases) { Text($0.label).tag($0) }
-				}
-				Picker("Bitrate", selection: $settings.bitrate) {
-					Text("Automatic (\(settings.resolution.defaultBitrate / 1000) Mbps)").tag(0)
-					ForEach([5000, 10000, 15000, 20000, 30000, 40000, 50000], id: \.self) { Text("\($0 / 1000) Mbps").tag($0) }
-				}
+				OptionRow(title: "Resolution", selection: $settings.resolution,
+					options: Resolution.allCases.map { ($0, $0.label) })
+				OptionRow(title: "Frame Rate", selection: $settings.fps,
+					options: [(30, "30 fps"), (60, "60 fps")])
+				OptionRow(title: "Codec", selection: $settings.codec,
+					options: VideoCodec.allCases.map { ($0, $0.label) })
+				OptionRow(title: "Bitrate", selection: $settings.bitrate,
+					options: [(0, "Automatic (\(settings.resolution.defaultBitrate / 1000) Mbps)")]
+						+ [5000, 10000, 15000, 20000, 30000, 40000, 50000].map { ($0, "\($0 / 1000) Mbps") })
 			}
 			Section("PSN") {
 				TextField("Account-ID (base64)", text: $settings.psnAccountID)
@@ -63,5 +58,50 @@ struct SettingsView: View {
 			}
 		}
 		.navigationTitle("Settings")
+	}
+}
+
+/// A setting row that opens a list of choices. Used instead of Picker, whose pushed
+/// selection screen comes up blank on tvOS 27.
+struct OptionRow<Value: Hashable>: View {
+	let title: String
+	@Binding var selection: Value
+	let options: [(Value, String)]
+
+	var body: some View {
+		NavigationLink {
+			OptionList(title: title, selection: $selection, options: options)
+		} label: {
+			HStack {
+				Text(title)
+				Spacer()
+				Text(options.first { $0.0 == selection }?.1 ?? "").foregroundStyle(.secondary)
+			}
+		}
+	}
+}
+
+private struct OptionList<Value: Hashable>: View {
+	let title: String
+	@Binding var selection: Value
+	let options: [(Value, String)]
+	@Environment(\.dismiss) private var dismiss
+
+	var body: some View {
+		List {
+			ForEach(options.indices, id: \.self) { i in
+				Button {
+					selection = options[i].0
+					dismiss()
+				} label: {
+					HStack {
+						Text(options[i].1)
+						Spacer()
+						if options[i].0 == selection { Image(systemName: "checkmark") }
+					}
+				}
+			}
+		}
+		.navigationTitle(title)
 	}
 }
