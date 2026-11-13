@@ -18,6 +18,7 @@ struct RegisterTarget: Identifiable {
 struct HostListView: View {
 	@EnvironmentObject private var consoles: ConsoleStore
 	@EnvironmentObject private var settings: StreamSettings
+	@Environment(\.scenePhase) private var scenePhase
 	@State private var streamTarget: StreamTarget?
 	@State private var registerTarget: RegisterTarget?
 	@State private var showAddHost = false
@@ -56,6 +57,14 @@ struct HostListView: View {
 			.navigationTitle("chiaki-ng")
 		}
 		.onAppear { consoles.startDiscovery() }
+		.onChange(of: scenePhase) { _, phase in
+			// tvOS tears down sockets of suspended apps; restart discovery on return
+			switch phase {
+			case .background: consoles.stopDiscovery()
+			case .active: if streamTarget == nil { consoles.startDiscovery() }
+			default: break
+			}
+		}
 		.sheet(item: $registerTarget) { target in
 			RegisterView(target: target) { console in
 				consoles.add(console)

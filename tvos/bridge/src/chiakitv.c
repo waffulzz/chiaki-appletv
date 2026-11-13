@@ -13,6 +13,7 @@
 #include <arpa/inet.h>
 #include <ifaddrs.h>
 #include <net/if.h>
+#include <signal.h>
 #include <netinet/in.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -42,6 +43,9 @@ void chiakitv_set_log_callback(ChiakiTVLogCallback cb, void *user, uint32_t leve
 
 int chiakitv_init(void)
 {
+	// Writing to a socket the system has torn down (e.g. while the app was suspended)
+	// raises SIGPIPE, which would kill the app. Get EPIPE from send() instead.
+	signal(SIGPIPE, SIG_IGN);
 	if(!g_log.cb)
 		chiaki_log_init(&g_log, CHIAKI_LOG_ALL & ~CHIAKI_LOG_VERBOSE, log_forward, NULL);
 	ChiakiErrorCode err = chiaki_lib_init();

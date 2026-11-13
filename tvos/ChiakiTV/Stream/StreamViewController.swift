@@ -56,6 +56,9 @@ final class StreamViewController: GCEventViewController {
 		session.onRumble = { [weak self] l, r in self?.input.rumble(left: l, right: r) }
 		session.onEvent = { [weak self] event in self?.handle(event) }
 
+		NotificationCenter.default.addObserver(self, selector: #selector(appDidEnterBackground),
+			name: UIApplication.didEnterBackgroundNotification, object: nil)
+
 		if !session.start() {
 			finish(error: "Could not start the session. See Logs for details.")
 		}
@@ -73,6 +76,11 @@ final class StreamViewController: GCEventViewController {
 			return
 		}
 		super.pressesBegan(presses, with: event)
+	}
+
+	@objc private func appDidEnterBackground() {
+		// The stream's sockets do not survive suspension; end the session cleanly
+		finish(error: nil)
 	}
 
 	private func handle(_ event: StreamSession.Event) {

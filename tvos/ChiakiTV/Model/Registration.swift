@@ -38,14 +38,17 @@ final class Registration: ObservableObject {
 	/// target: from discovery (ChiakiTarget). PS5 consoles are fine with CHIAKI_TARGET_PS5_1.
 	func start(address: String, target: Int32, accountIDBase64: String, pin: String, broadcast: Bool = false) {
 		guard status != .running else { return }
-		guard let accountID = Data(base64Encoded: accountIDBase64.trimmingCharacters(in: .whitespacesAndNewlines)),
-		      accountID.count == 8 else {
+		let accountIDClean = accountIDBase64.filter { !$0.isWhitespace }
+		guard let accountID = Data(base64Encoded: accountIDClean), accountID.count == 8 else {
 			status = .failed("The PSN Account-ID must be 8 bytes encoded as base64 (12 characters, usually ending in \"=\").")
 			return
 		}
-		let pinDigits = pin.trimmingCharacters(in: .whitespacesAndNewlines)
+		// Keep only digits: the console shows the PIN in two groups, and keyboards may add spaces
+		// or send non-ASCII digit characters
+		let pinDigits = pin.compactMap { $0.wholeNumberValue }.map(String.init).joined()
+		LogStore.shared.append(level: 4, "Registration PIN: \(pin.count) characters entered, \(pinDigits.count) digits")
 		guard pinDigits.count == 8, let pinValue = UInt32(pinDigits) else {
-			status = .failed("The PIN must be the 8 digits shown on the console.")
+			status = .failed("The PIN must be the 8 digits shown on the console (got \(pinDigits.count) digits).")
 			return
 		}
 		release()

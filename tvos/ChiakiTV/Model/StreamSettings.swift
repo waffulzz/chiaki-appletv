@@ -53,7 +53,8 @@ final class StreamSettings: ObservableObject {
 		resolution = Resolution(rawValue: defaults.integer(forKey: "resolution")) ?? .p1080
 		let storedFPS = defaults.integer(forKey: "fps")
 		fps = storedFPS == 30 ? 30 : 60
-		codec = VideoCodec(rawValue: defaults.integer(forKey: "codec")) ?? .h265
+		// integer(forKey:) reads an unset key as 0 (H.264), so check presence explicitly
+		codec = (defaults.object(forKey: "codec") as? Int).flatMap(VideoCodec.init(rawValue:)) ?? .h265
 		bitrate = defaults.integer(forKey: "bitrate")
 		psnAccountID = defaults.string(forKey: "psnAccountID") ?? ""
 	}

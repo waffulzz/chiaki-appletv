@@ -28,7 +28,8 @@ final class LogStore: ObservableObject {
 			guard let msg else { return }
 			LogStore.shared.append(level: UInt32(bitPattern: level), String(cString: msg))
 		}
-		let mask = CHIAKITV_LOG_ERROR.rawValue | CHIAKITV_LOG_WARNING.rawValue | CHIAKITV_LOG_INFO.rawValue | CHIAKITV_LOG_DEBUG.rawValue
+		// Debug level hexdumps every control heartbeat; keep it out of the log
+		let mask = CHIAKITV_LOG_ERROR.rawValue | CHIAKITV_LOG_WARNING.rawValue | CHIAKITV_LOG_INFO.rawValue
 		chiakitv_set_log_callback(cb, nil, mask)
 	}
 
@@ -38,6 +39,10 @@ final class LogStore: ObservableObject {
 		case CHIAKITV_LOG_WARNING.rawValue: logger.warning("\(text, privacy: .public)")
 		default: logger.info("\(text, privacy: .public)")
 		}
+		#if DEBUG
+		// Visible with `xcrun devicectl device process launch --console`
+		fputs("[chiaki] \(text)\n", stderr)
+		#endif
 		lock.lock()
 		pending.append(Line(id: nextID, level: level, text: text))
 		nextID += 1
