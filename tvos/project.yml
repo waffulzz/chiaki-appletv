@@ -23,6 +23,7 @@ targets:
       - framework: build/ChiakiTV.xcframework
         embed: false
       - sdk: AVFoundation.framework
+      - sdk: AVKit.framework
       - sdk: CoreMedia.framework
       - sdk: VideoToolbox.framework
       - sdk: GameController.framework

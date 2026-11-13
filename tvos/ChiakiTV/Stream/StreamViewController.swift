@@ -39,8 +39,25 @@ final class StreamViewController: GCEventViewController {
 	/// Ask tvOS to switch the TV to the stream's frame rate and SDR, if the user turned on
 	/// Settings › Video and Audio › Match Content. That skips 4K/HDR upscaling and tone mapping
 	/// on the Apple TV, and the TV's often slower HDR picture modes.
+	/// UIWindow.avDisplayManager comes from an AVKit category that is missing at runtime on some
+	/// tvOS versions (calling it then throws "unrecognized selector"), so look it up defensively.
+	private var displayManager: AVDisplayManager? {
+		guard let window = view.window else { return nil }
+		let selector = NSSelectorFromString("avDisplayManager")
+		if window.responds(to: selector) {
+			return window.avDisplayManager
+		}
+		if let scene = window.windowScene, scene.responds(to: selector) {
+			return scene.value(forKey: "avDisplayManager") as? AVDisplayManager
+		}
+		return nil
+	}
+
 	private func requestMatchingDisplayMode() {
-		guard let manager = view.window?.avDisplayManager else { return }
+		guard let manager = displayManager else {
+			LogStore.shared.append(level: 4, "Display: display mode switching is not available on this tvOS version")
+			return
+		}
 		guard manager.isDisplayCriteriaMatchingEnabled else {
 			LogStore.shared.append(level: 4, "Display: Match Content is off in tvOS settings, keeping the current output mode")
 			return
@@ -57,7 +74,7 @@ final class StreamViewController: GCEventViewController {
 
 	override func viewWillDisappear(_ animated: Bool) {
 		super.viewWillDisappear(animated)
-		view.window?.avDisplayManager.preferredDisplayCriteria = nil
+		displayManager?.preferredDisplayCriteria = nil
 		// Hand controller input back to UIKit, otherwise the menus stop responding after the stream
 		controllerUserInteractionEnabled = true
 	}
