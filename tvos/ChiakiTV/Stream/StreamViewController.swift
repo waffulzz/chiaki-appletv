@@ -73,13 +73,13 @@ final class StreamViewController: GCEventViewController {
 		super.viewWillDisappear(animated)
 		displayManager?.preferredDisplayCriteria = nil
 		// Hand controller input back to UIKit, otherwise the menus stop responding after the stream
-		controllerUserInteractionEnabled = true
+		setMenuOpen(true)
 	}
 
 	override func viewDidLoad() {
 		super.viewDidLoad()
 		view.backgroundColor = .black
-		controllerUserInteractionEnabled = false
+		setMenuOpen(false)
 		view.layer.addSublayer(session.video.displayLayer)
 
 		statusLabel.text = "Connecting…"
@@ -128,6 +128,13 @@ final class StreamViewController: GCEventViewController {
 		finish(error: nil)
 	}
 
+	/// While one of our menus (disconnect, keyboard, PIN) is up, the controller drives the menu
+	/// through UIKit and nothing is forwarded to the console.
+	private func setMenuOpen(_ open: Bool) {
+		controllerUserInteractionEnabled = open
+		input.setForwarding(!open)
+	}
+
 	private func handle(_ event: StreamSession.Event) {
 		switch event {
 		case .connected:
@@ -144,7 +151,7 @@ final class StreamViewController: GCEventViewController {
 			if let alert = keyboardAlert {
 				keyboardAlert = nil
 				alert.dismiss(animated: true)
-				controllerUserInteractionEnabled = false
+				setMenuOpen(false)
 			}
 		}
 	}
@@ -156,7 +163,7 @@ final class StreamViewController: GCEventViewController {
 	private func showKeyboard(text: String) {
 		guard !finished else { return }
 		keyboardAlert?.dismiss(animated: false)
-		controllerUserInteractionEnabled = true
+		setMenuOpen(true)
 		let alert = UIAlertController(title: "Enter Text", message: nil, preferredStyle: .alert)
 		alert.addTextField { field in
 			field.text = text
@@ -164,11 +171,11 @@ final class StreamViewController: GCEventViewController {
 		}
 		alert.addAction(UIAlertAction(title: "Done", style: .default) { [weak self, weak alert] _ in
 			self?.session.finishKeyboard(text: alert?.textFields?.first?.text ?? "")
-			self?.controllerUserInteractionEnabled = false
+			self?.setMenuOpen(false)
 		})
 		alert.addAction(UIAlertAction(title: "Cancel", style: .cancel) { [weak self] _ in
 			self?.session.finishKeyboard(text: nil)
-			self?.controllerUserInteractionEnabled = false
+			self?.setMenuOpen(false)
 		})
 		keyboardAlert = alert
 		let present: () -> Void = { [weak self] in
@@ -189,14 +196,16 @@ final class StreamViewController: GCEventViewController {
 		alert.addTextField { $0.keyboardType = .numberPad }
 		alert.addAction(UIAlertAction(title: "OK", style: .default) { [weak self, weak alert] _ in
 			self?.session.setLoginPIN(alert?.textFields?.first?.text ?? "")
+			self?.setMenuOpen(false)
 		})
 		alert.addAction(UIAlertAction(title: "Cancel", style: .cancel) { [weak self] _ in self?.finish(error: nil) })
+		setMenuOpen(true)
 		present(alert, animated: true)
 	}
 
 	private func confirmQuit() {
 		guard presentedViewController == nil, !finished else { return }
-		controllerUserInteractionEnabled = true
+		setMenuOpen(true)
 		let alert = UIAlertController(title: "End Remote Play?", message: nil, preferredStyle: .actionSheet)
 		alert.addAction(UIAlertAction(title: "Disconnect", style: .destructive) { [weak self] _ in self?.finish(error: nil) })
 		alert.addAction(UIAlertAction(title: "Disconnect and Put Console to Rest", style: .default) { [weak self] _ in
@@ -204,7 +213,7 @@ final class StreamViewController: GCEventViewController {
 			DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { self?.finish(error: nil) }
 		})
 		alert.addAction(UIAlertAction(title: "Keep Playing", style: .cancel) { [weak self] _ in
-			self?.controllerUserInteractionEnabled = false
+			self?.setMenuOpen(false)
 		})
 		present(alert, animated: true)
 	}
@@ -212,7 +221,7 @@ final class StreamViewController: GCEventViewController {
 	private func finish(error: String?) {
 		guard !finished else { return }
 		finished = true
-		controllerUserInteractionEnabled = true
+		setMenuOpen(true)
 		if let error { LogStore.shared.append(level: 1, "Stream ended: \(error)") }
 		statusLabel.isHidden = false
 		statusLabel.text = "Disconnecting…"

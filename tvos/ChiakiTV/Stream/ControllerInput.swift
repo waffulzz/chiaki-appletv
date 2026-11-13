@@ -22,6 +22,8 @@ final class ControllerInput {
 	private let inputQueue = DispatchQueue(label: "chiaki.controller-input", qos: .userInteractive)
 	private var remotes: [GCController] = []
 	private var lastState = ChiakiControllerState()
+	/// False while one of our menus is on screen: input then drives the menu, not the console
+	private var forwarding = true
 	private var quitComboArmed = true
 	private var observers: [NSObjectProtocol] = []
 	// Touchpad (input queue only): touches and touch_id_next live here between updates
@@ -184,6 +186,7 @@ final class ControllerInput {
 			quitComboArmed = true
 		}
 
+		guard forwarding else { return }
 		if !chiaki_controller_state_equals(&s, &lastState) {
 			lastState = s
 			onStateChange?(s)
@@ -217,6 +220,19 @@ final class ControllerInput {
 				chiaki_controller_state_stop_touch(&touchState, UInt8(touchIDs[i]))
 				touchIDs[i] = -1
 			}
+		}
+	}
+
+	/// Stop or resume sending input to the console. Stopping sends an idle state, so nothing
+	/// stays held on the console (e.g. the buttons used to open the menu).
+	func setForwarding(_ on: Bool) {
+		inputQueue.async { [weak self] in
+			guard let self, self.forwarding != on else { return }
+			self.forwarding = on
+			var idle = ChiakiControllerState()
+			chiaki_controller_state_set_idle(&idle)
+			self.lastState = idle
+			self.onStateChange?(idle)
 		}
 	}
 
