@@ -39,3 +39,5 @@ chiaki.conf
 .cache/
 *.vscode
 site/
+/tvos/build
+/tvos/ChiakiTV.xcodeproj

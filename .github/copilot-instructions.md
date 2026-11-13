@@ -8,6 +8,7 @@
   - `gui/src/discoverymanager.cpp` bridges `chiaki_discovery_service_*` callbacks to Qt signals.
 - `cli/` is a small wrapper over `chiaki-lib` (`discover`, `wakeup`), also callable from GUI command mode (`gui/src/main.cpp`).
 - `android/` builds against the same root `CMakeLists.txt` with platform-specific flags (GUI/CLI/FFmpeg disabled there).
+- `tvos/` is the Apple TV app: `tvos/scripts/build-chiaki-lib.sh` cross-compiles `chiaki-lib` (mbedtls, Opus/libevent/json-c/miniupnpc via FetchContent) plus the C facade in `tvos/bridge/` into an xcframework, and the SwiftUI app in `tvos/ChiakiTV/` (project generated from `tvos/project.yml` with xcodegen) decodes video with VideoToolbox.
 
 ## Build/test workflows used in this repo
 - Always initialize submodules first: `git submodule update --init --recursive`.

@@ -129,6 +129,26 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+  build-tvos:
+    name: Build tvOS version
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: recursive
+
+      - name: Install build tools
+        run: |
+          brew install cmake ninja protobuf xcodegen
+
+      - name: Build chiaki-lib for tvOS
+        run: |
+          tvos/scripts/build-chiaki-lib.sh Release
+
+      - name: Build tvOS app
+        run: |
+          xcodebuild -project tvos/ChiakiTV.xcodeproj -scheme ChiakiTV -sdk appletvos -configuration Release CODE_SIGNING_ALLOWED=NO build
+
   build-mac_arm64_github:
     name: Build macOSX arm64 version Github
     runs-on: macos-15

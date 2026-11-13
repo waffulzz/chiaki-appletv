@@ -9,7 +9,7 @@ This file is a quick orientation for new contributors working on `chiaki-ng`.
 - shared protocol and codec code in [`lib/`](./lib)
 - desktop GUI code in [`gui/`](./gui)
 - command-line tooling in [`cli/`](./cli)
-- platform-specific frontends in [`android/`](./android) and [`switch/`](./switch)
+- platform-specific frontends in [`android/`](./android), [`switch/`](./switch) and [`tvos/`](./tvos) (Apple TV)
 - build, packaging, and release scripts in [`scripts/`](./scripts) and [`.github/workflows/`](./.github/workflows)
 
 Most feature work on Linux/Windows/macOS goes through `lib/` plus `gui/`.

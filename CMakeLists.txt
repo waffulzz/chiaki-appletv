@@ -14,6 +14,7 @@ option(CHIAKI_ENABLE_CLI "Enable CLI for Chiaki" ON)
 option(CHIAKI_ENABLE_GUI "Enable Qt GUI" ON)
 option(CHIAKI_ENABLE_ANDROID "Enable Android (Use only as part of the Gradle Project)" OFF)
 option(CHIAKI_ENABLE_BOREALIS "Enable Borealis GUI (For Nintendo Switch or PC)" OFF)
+option(CHIAKI_ENABLE_TVOS "Enable the tvOS bridge library (Use only as part of tvos/scripts/build-chiaki-lib.sh)" OFF)
 tri_option(CHIAKI_ENABLE_SETSU "Enable libsetsu for touchpad input from controller" AUTO)
 tri_option(CHIAKI_ENABLE_STEAMDECK_NATIVE "Enable sdeck for native gyro and haptic feedback from Steam Deck" ON)
 option(CHIAKI_LIB_ENABLE_OPUS "Use Opus as part of Chiaki Lib" ON)
@@ -37,6 +38,8 @@ tri_option(CHIAKI_USE_SYSTEM_NANOPB "Use system-provided nanopb instead of submo
 tri_option(CHIAKI_USE_SYSTEM_CURL "Use system-provided curl instead of submodule. Has to be built with experimental WebSocket support!" OFF)
 option(CHIAKI_LIB_JSONC_EXTERNAL_PROJECT "Build json-c from source via FetchContent" OFF)
 option(CHIAKI_LIB_MINIUPNPC_EXTERNAL_PROJECT "Build miniupnpc from source via FetchContent" OFF)
+option(CHIAKI_LIB_OPUS_EXTERNAL_PROJECT "Build Opus from source via FetchContent" OFF)
+option(CHIAKI_LIB_LIBEVENT_EXTERNAL_PROJECT "Build libevent from source via FetchContent" OFF)
 
 set(CHIAKI_VERSION_MAJOR 1)
 set(CHIAKI_VERSION_MINOR 10)
@@ -55,7 +58,11 @@ include(CPack)
 
 set(CHIAKI_IS_SWITCH ${NSWITCH})
 
-if(APPLE)
+if(CMAKE_SYSTEM_NAME STREQUAL "tvOS")
+	set(TVOS ON)
+endif()
+
+if(APPLE AND NOT IOS AND NOT TVOS)
 	if(CMAKE_HOST_SYSTEM_PROCESSOR STREQUAL "arm64")
 		# The app bundles Homebrew's libraries, which are built for the macOS they were installed on,
 		# so the app can't run on anything older than the build machine's macOS; say so in Info.plist
@@ -208,6 +215,14 @@ if(CHIAKI_LIB_MINIUPNPC_EXTERNAL_PROJECT)
 	include(MiniupnpcExternalProject)
 endif()
 
+if(CHIAKI_LIB_OPUS_EXTERNAL_PROJECT)
+	include(OpusExternalProject)
+endif()
+
+if(CHIAKI_LIB_LIBEVENT_EXTERNAL_PROJECT)
+	include(LibeventExternalProject)
+endif()
+
 add_subdirectory(lib)
 
 if(CHIAKI_ENABLE_CLI)
@@ -296,4 +311,8 @@ endif()
 
 if(CHIAKI_ENABLE_BOREALIS)
 	add_subdirectory(switch)
+endif()
+
+if(CHIAKI_ENABLE_TVOS)
+	add_subdirectory(tvos/bridge)
 endif()
