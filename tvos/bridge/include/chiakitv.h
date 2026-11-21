@@ -127,7 +127,10 @@ typedef enum {
 	CHIAKITV_EVENT_KEYBOARD_OPEN = 7,
 	CHIAKITV_EVENT_KEYBOARD_TEXT_CHANGE = 8,
 	/// The console closed the keyboard itself
-	CHIAKITV_EVENT_KEYBOARD_REMOTE_CLOSE = 9
+	CHIAKITV_EVENT_KEYBOARD_REMOTE_CLOSE = 9,
+	/// DualSense adaptive trigger effects: trigger_type_* plus 10 parameter bytes each,
+	/// in the DualSense controller's own effect format
+	CHIAKITV_EVENT_TRIGGER_EFFECTS = 10
 } ChiakiTVEventType;
 
 typedef struct {
@@ -141,6 +144,10 @@ typedef struct {
 	uint8_t led[3];
 	const char *nickname;
 	const char *keyboard_text; // valid during the callback only
+	uint8_t trigger_type_left;
+	uint8_t trigger_type_right;
+	uint8_t trigger_left[10];
+	uint8_t trigger_right[10];
 } ChiakiTVEvent;
 
 /// Return false to report the frame as corrupt (the console then sends a new keyframe).

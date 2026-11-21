@@ -31,6 +31,7 @@ final class ControllerInput {
 	private var touchIDs: [Int8] = [-1, -1]
 	/// A mute/microphone button, if the controller exposes one, acts as the PS button
 	private var extraPSPressed = false
+	private var touchpadButtonWasPressed = false
 	private var gestureElements: [GCControllerElement] = []
 	// Rumble (main queue only)
 	private var hapticEngines: [CHHapticEngine] = []
@@ -90,6 +91,7 @@ final class ControllerInput {
 	}
 
 	private func detach() {
+		AdaptiveTriggers.reset(controller?.extendedGamepad)
 		controller?.extendedGamepad?.valueChangedHandler = nil
 		controller?.handlerQueue = .main
 		for e in gestureElements { e.preferredSystemGestureState = .enabled }
@@ -160,10 +162,18 @@ final class ControllerInput {
 			if share { buttons |= CHIAKI_CONTROLLER_BUTTON_SHARE.rawValue }
 		}
 		if gp.buttonHome?.isPressed == true || extraPSPressed { buttons |= CHIAKI_CONTROLLER_BUTTON_PS.rawValue }
-		if let ds = gp as? GCDualSenseGamepad, ds.touchpadButton.isPressed {
-			buttons |= CHIAKI_CONTROLLER_BUTTON_TOUCHPAD.rawValue
-		} else if let ds4 = gp as? GCDualShockGamepad, ds4.touchpadButton.isPressed {
-			buttons |= CHIAKI_CONTROLLER_BUTTON_TOUCHPAD.rawValue
+		if let touchpadButton = (gp as? GCDualSenseGamepad)?.touchpadButton ?? (gp as? GCDualShockGamepad)?.touchpadButton {
+			if touchpadButton.isPressed {
+				buttons |= CHIAKI_CONTROLLER_BUTTON_TOUCHPAD.rawValue
+			}
+			// Diagnostics for taps registering as clicks: what does tvOS report for the button?
+			if touchpadButton.isPressed != touchpadButtonWasPressed {
+				touchpadButtonWasPressed = touchpadButton.isPressed
+				let element = element as? GCControllerButtonInput
+				LogStore.shared.append(level: 4, String(format: "Touchpad button %@ value=%.2f (event from %@), fingers: %d %d",
+					touchpadButton.isPressed ? "DOWN" : "UP", touchpadButton.value,
+					element?.aliases.sorted().joined(separator: "/") ?? "other", touchIDs[0], touchIDs[1]))
+			}
 		}
 		s.buttons = buttons
 		s.l2_state = UInt8(max(0, min(255, gp.leftTrigger.value * 255)))
@@ -220,6 +230,23 @@ final class ControllerInput {
 				chiaki_controller_state_stop_touch(&touchState, UInt8(touchIDs[i]))
 				touchIDs[i] = -1
 			}
+		}
+	}
+
+	// MARK: - Adaptive triggers
+
+	private var lastTriggerLog = ["", ""]
+
+	/// PS5 adaptive trigger effects for L2/R2. Main queue.
+	func applyTriggerEffects(left: (UInt8, [UInt8]), right: (UInt8, [UInt8])) {
+		guard let ds = controller?.extendedGamepad as? GCDualSenseGamepad else { return }
+		let applied = [
+			AdaptiveTriggers.apply(type: left.0, params: left.1, to: ds.leftTrigger),
+			AdaptiveTriggers.apply(type: right.0, params: right.1, to: ds.rightTrigger),
+		]
+		for (i, text) in applied.enumerated() where text != lastTriggerLog[i] {
+			lastTriggerLog[i] = text
+			LogStore.shared.append(level: 4, "Trigger \(i == 0 ? "L2" : "R2"): \(text)")
 		}
 	}
 

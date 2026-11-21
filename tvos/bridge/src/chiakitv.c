@@ -366,6 +366,13 @@ static void session_event_cb(ChiakiEvent *event, void *user)
 		case CHIAKI_EVENT_KEYBOARD_REMOTE_CLOSE:
 			e.type = CHIAKITV_EVENT_KEYBOARD_REMOTE_CLOSE;
 			break;
+		case CHIAKI_EVENT_TRIGGER_EFFECTS:
+			e.type = CHIAKITV_EVENT_TRIGGER_EFFECTS;
+			e.trigger_type_left = event->trigger_effects.type_left;
+			e.trigger_type_right = event->trigger_effects.type_right;
+			memcpy(e.trigger_left, event->trigger_effects.left, sizeof(e.trigger_left));
+			memcpy(e.trigger_right, event->trigger_effects.right, sizeof(e.trigger_right));
+			break;
 		case CHIAKI_EVENT_LED_COLOR:
 			e.type = CHIAKITV_EVENT_LED_COLOR;
 			memcpy(e.led, event->led_state, sizeof(e.led));

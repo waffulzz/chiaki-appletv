@@ -17,6 +17,8 @@ final class StreamSession {
 	let audio = AudioPlayer()
 	var onEvent: ((Event) -> Void)? // main thread
 	var onRumble: ((UInt8, UInt8) -> Void)? // main thread
+	/// DualSense adaptive trigger effects (type + 10 parameter bytes per trigger), main thread
+	var onTriggerEffects: (((UInt8, [UInt8]), (UInt8, [UInt8])) -> Void)?
 
 	private var handle: OpaquePointer?
 	private let console: RegisteredConsole
@@ -85,6 +87,10 @@ final class StreamSession {
 			case Int32(CHIAKITV_EVENT_KEYBOARD_OPEN.rawValue):
 				let text = e.keyboard_text.map { String(cString: $0) } ?? ""
 				DispatchQueue.main.async { s.onEvent?(.keyboardOpen(text: text)) }
+			case Int32(CHIAKITV_EVENT_TRIGGER_EFFECTS.rawValue):
+				let left = (e.trigger_type_left, bytesFromCTuple(e.trigger_left))
+				let right = (e.trigger_type_right, bytesFromCTuple(e.trigger_right))
+				DispatchQueue.main.async { s.onTriggerEffects?(left, right) }
 			case Int32(CHIAKITV_EVENT_KEYBOARD_REMOTE_CLOSE.rawValue):
 				DispatchQueue.main.async { s.onEvent?(.keyboardRemoteClose) }
 			case Int32(CHIAKITV_EVENT_RUMBLE.rawValue), Int32(CHIAKITV_EVENT_HAPTIC_RUMBLE.rawValue):
