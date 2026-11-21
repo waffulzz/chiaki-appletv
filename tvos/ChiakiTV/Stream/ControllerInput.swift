@@ -31,7 +31,11 @@ final class ControllerInput {
 	private var touchIDs: [Int8] = [-1, -1]
 	/// A mute/microphone button, if the controller exposes one, acts as the PS button
 	private var extraPSPressed = false
-	private var touchpadButtonWasPressed = false
+	/// Touches not yet sent to the console (input queue): see updateTouches
+	private var pendingTouches: [(x: UInt16, y: UInt16)?] = [nil, nil]
+	private static let touchMoveDistance: Float = 40
+	/// Which touches are sent to the console (Settings › Touchpad)
+	var touchpadMode: TouchpadMode = .clicksOnly
 	private var gestureElements: [GCControllerElement] = []
 	// Rumble (main queue only)
 	private var hapticEngines: [CHHapticEngine] = []
@@ -166,14 +170,6 @@ final class ControllerInput {
 			if touchpadButton.isPressed {
 				buttons |= CHIAKI_CONTROLLER_BUTTON_TOUCHPAD.rawValue
 			}
-			// Diagnostics for taps registering as clicks: what does tvOS report for the button?
-			if touchpadButton.isPressed != touchpadButtonWasPressed {
-				touchpadButtonWasPressed = touchpadButton.isPressed
-				let element = element as? GCControllerButtonInput
-				LogStore.shared.append(level: 4, String(format: "Touchpad button %@ value=%.2f (event from %@), fingers: %d %d",
-					touchpadButton.isPressed ? "DOWN" : "UP", touchpadButton.value,
-					element?.aliases.sorted().joined(separator: "/") ?? "other", touchIDs[0], touchIDs[1]))
-			}
 		}
 		s.buttons = buttons
 		s.l2_state = UInt8(max(0, min(255, gp.leftTrigger.value * 255)))
@@ -205,6 +201,12 @@ final class ControllerInput {
 
 	/// DualSense/DualShock touchpad fingers (-1...1, y up) to PS touchpad touches.
 	/// GameController reports (0, 0) when a finger is lifted.
+	///
+	/// Over Remote Play the PS5 makes some games treat any touch as a touchpad click (GTA 6 opens
+	/// its map; chiaki-ng issue #894), which touches on a locally connected DualSense don't do.
+	/// So by default (clicksOnly) no touches are sent; clicksAndSwipes sends a touch only once the
+	/// finger moves by touchMoveDistance; allTouches sends every touch. Clicks are always sent
+	/// separately as the touchpad button.
 	private func updateTouches(_ gp: GCExtendedGamepad) {
 		let pads: [GCControllerDirectionPad]
 		if let ds = gp as? GCDualSenseGamepad {
@@ -214,21 +216,34 @@ final class ControllerInput {
 		} else {
 			return
 		}
+		guard touchpadMode != .clicksOnly else { return }
 		let maxX: Float = isPS5 ? 1919 : 1920
 		let maxY: Float = isPS5 ? 1079 : 942
 		for (i, pad) in pads.enumerated() {
 			let x = pad.xAxis.value, y = pad.yAxis.value
 			let px = UInt16(max(0, min(maxX, (x + 1) / 2 * maxX)))
 			let py = UInt16(max(0, min(maxY, (1 - y) / 2 * maxY)))
-			if x != 0 || y != 0 {
-				if touchIDs[i] < 0 {
-					touchIDs[i] = chiaki_controller_state_start_touch(&touchState, px, py)
-				} else {
-					chiaki_controller_state_set_touch_pos(&touchState, UInt8(touchIDs[i]), px, py)
+			guard x != 0 || y != 0 else {
+				// Finger lifted: drop a pending tap, or end a touch the console knows about
+				pendingTouches[i] = nil
+				if touchIDs[i] >= 0 {
+					chiaki_controller_state_stop_touch(&touchState, UInt8(touchIDs[i]))
+					touchIDs[i] = -1
 				}
-			} else if touchIDs[i] >= 0 {
-				chiaki_controller_state_stop_touch(&touchState, UInt8(touchIDs[i]))
-				touchIDs[i] = -1
+				continue
+			}
+			if touchIDs[i] >= 0 {
+				chiaki_controller_state_set_touch_pos(&touchState, UInt8(touchIDs[i]), px, py)
+			} else if touchpadMode == .allTouches {
+				touchIDs[i] = chiaki_controller_state_start_touch(&touchState, px, py)
+			} else if let pending = pendingTouches[i] {
+				let distance = hypot(Float(px) - Float(pending.x), Float(py) - Float(pending.y))
+				if distance >= Self.touchMoveDistance {
+					pendingTouches[i] = nil
+					touchIDs[i] = chiaki_controller_state_start_touch(&touchState, px, py)
+				}
+			} else {
+				pendingTouches[i] = (px, py)
 			}
 		}
 	}

@@ -51,6 +51,14 @@ struct SettingsView: View {
 					}
 				}
 			}
+			Section {
+				OptionRow(title: "Touchpad", selection: $settings.touchpadMode,
+					options: TouchpadMode.allCases.map { ($0, $0.label) })
+			} header: {
+				Text("Touchpad")
+			} footer: {
+				Text("Over Remote Play, the PS5 treats touches on the touchpad as clicks in some games, for example GTA 6 opens its map. \"Clicks only\" sends just touchpad clicks. \"Clicks and swipes\" also sends swipes but ignores taps. \"All touches\" sends everything, for games that rely on touch.")
+			}
 			Section("Controls") {
 				Text("Options + Create/Share: PS button\nL1 + R1 + L3 + R3, or Siri Remote Back: end Remote Play")
 					.font(.callout)

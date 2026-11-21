@@ -13,11 +13,13 @@ final class StreamViewController: GCEventViewController {
 	private let input = ControllerInput()
 	private let statusLabel = UILabel()
 	private let onFinished: (String?) -> Void
+	private let touchpadMode: TouchpadMode
 	private var finished = false
 	private var connected = false
 
 	init(console: RegisteredConsole, address: String, settings: StreamSettings, onFinished: @escaping (String?) -> Void) {
 		self.session = StreamSession(console: console, address: address, settings: settings)
+		self.touchpadMode = settings.touchpadMode
 		self.onFinished = onFinished
 		super.init(nibName: nil, bundle: nil)
 	}
@@ -96,6 +98,7 @@ final class StreamViewController: GCEventViewController {
 		])
 
 		input.isPS5 = session.isPS5
+		input.touchpadMode = touchpadMode
 		input.onStateChange = { [weak self] state in self?.session.setControllerState(state) }
 		input.onQuitRequested = { [weak self] in self?.confirmQuit() }
 		session.onRumble = { [weak self] l, r in self?.input.rumble(left: l, right: r) }

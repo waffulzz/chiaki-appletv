@@ -39,6 +39,20 @@ enum VideoCodec: Int, CaseIterable, Identifiable, Codable {
 	var label: String { self == .h264 ? "H.264" : "H.265 (PS5 only)" }
 }
 
+/// Which touchpad input reaches the console. Over Remote Play the PS5 treats touches as touchpad
+/// clicks in some games (GTA 6 opens its map; chiaki-ng issue #894), so by default only clicks are sent.
+enum TouchpadMode: Int, CaseIterable, Identifiable {
+	case clicksOnly = 0, clicksAndSwipes = 1, allTouches = 2
+	var id: Int { rawValue }
+	var label: String {
+		switch self {
+		case .clicksOnly: return "Clicks only"
+		case .clicksAndSwipes: return "Clicks and swipes"
+		case .allTouches: return "All touches"
+		}
+	}
+}
+
 /// User-facing stream settings, persisted in UserDefaults.
 final class StreamSettings: ObservableObject {
 	private let defaults = UserDefaults.standard
@@ -48,6 +62,7 @@ final class StreamSettings: ObservableObject {
 	@Published var codec: VideoCodec { didSet { defaults.set(codec.rawValue, forKey: "codec") } }
 	@Published var bitrate: Int { didSet { defaults.set(bitrate, forKey: "bitrate") } } // 0 = automatic
 	@Published var psnAccountID: String { didSet { defaults.set(psnAccountID, forKey: "psnAccountID") } }
+	@Published var touchpadMode: TouchpadMode { didSet { defaults.set(touchpadMode.rawValue, forKey: "touchpadMode") } }
 
 	init() {
 		resolution = Resolution(rawValue: defaults.integer(forKey: "resolution")) ?? .p1080
@@ -57,6 +72,7 @@ final class StreamSettings: ObservableObject {
 		codec = (defaults.object(forKey: "codec") as? Int).flatMap(VideoCodec.init(rawValue:)) ?? .h265
 		bitrate = defaults.integer(forKey: "bitrate")
 		psnAccountID = defaults.string(forKey: "psnAccountID") ?? ""
+		touchpadMode = TouchpadMode(rawValue: defaults.integer(forKey: "touchpadMode")) ?? .clicksOnly
 	}
 
 	var effectiveBitrate: UInt32 { bitrate > 0 ? UInt32(bitrate) : resolution.defaultBitrate }

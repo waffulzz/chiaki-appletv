@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: LicenseRef-AGPL-3.0-only-OpenSSL
 
 import Foundation
+import QuartzCore
 import os
 import ChiakiTVBridge
 
@@ -40,7 +41,7 @@ final class LogStore: ObservableObject {
 		default: logger.info("\(text, privacy: .public)")
 		}
 		// Visible with `xcrun devicectl device process launch --console`
-		fputs("[chiaki] \(text)\n", stderr)
+		fputs(String(format: "[chiaki %.3f] ", CACurrentMediaTime()) + text + "\n", stderr)
 		lock.lock()
 		pending.append(Line(id: nextID, level: level, text: text))
 		nextID += 1
