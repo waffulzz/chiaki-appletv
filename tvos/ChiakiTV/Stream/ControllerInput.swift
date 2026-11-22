@@ -37,7 +37,10 @@ final class ControllerInput {
 	/// Which touches are sent to the console (Settings › Touchpad)
 	var touchpadMode: TouchpadMode = .clicksOnly
 	private var gestureElements: [GCControllerElement] = []
-	// Rumble (main queue only)
+	// Rumble (hapticsQueue only). Every update is a synchronous call into tvOS's haptics
+	// service, so it runs on its own queue to never stall the main thread or controller input.
+	private let hapticsQueue = DispatchQueue(label: "chiaki.haptics", qos: .userInitiated)
+	private var rumbleSent: [Float] = []
 	private var hapticEngines: [CHHapticEngine] = []
 	// Standard players only: on tvOS 26+ the haptics service refuses advanced players (error 4097)
 	private var rumblePlayers: [CHHapticPatternPlayer] = []
@@ -101,7 +104,8 @@ final class ControllerInput {
 		for e in gestureElements { e.preferredSystemGestureState = .enabled }
 		gestureElements.removeAll()
 		controller = nil
-		stopHaptics()
+		// Synchronous: detach also runs from deinit, where an async [weak self] block would never run
+		hapticsQueue.sync { stopHaptics() }
 	}
 
 	/// Let the PS/Home and Create buttons reach the console instead of tvOS gestures
@@ -265,11 +269,26 @@ final class ControllerInput {
 		}
 	}
 
+	/// Called every second during a stream: re-attaches the controller if it lost its handler
+	/// or a connected gamepad isn't attached, and checks forwarding. Main queue.
+	func checkHealth() {
+		if let c = controller {
+			if c.extendedGamepad?.valueChangedHandler == nil {
+				LogStore.shared.append(level: 2, "Input watchdog: controller handler was missing, re-attaching")
+				attach(c)
+			}
+		} else if let c = GCController.controllers().first(where: { $0.extendedGamepad != nil }) {
+			LogStore.shared.append(level: 2, "Input watchdog: gamepad connected but not attached, attaching")
+			attach(c)
+		}
+	}
+
 	/// Stop or resume sending input to the console. Stopping sends an idle state, so nothing
 	/// stays held on the console (e.g. the buttons used to open the menu).
 	func setForwarding(_ on: Bool) {
 		inputQueue.async { [weak self] in
 			guard let self, self.forwarding != on else { return }
+			LogStore.shared.append(level: 4, "Controller input to console \(on ? "resumed" : "paused")")
 			self.forwarding = on
 			var idle = ChiakiControllerState()
 			chiaki_controller_state_set_idle(&idle)
@@ -286,8 +305,8 @@ final class ControllerInput {
 
 	/// Engines are created on the first rumble rather than at attach time, and creation is
 	/// retried: the controller haptics service is not always reachable right away.
-	private func startHaptics() {
-		guard let c = controller, let haptics = c.haptics else { return }
+	private func startHaptics(_ haptics: GCDeviceHaptics?) {
+		guard let haptics else { return }
 		let now = CACurrentMediaTime()
 		guard now - lastHapticsAttempt > 2 else { return }
 		lastHapticsAttempt = now
@@ -307,9 +326,9 @@ final class ControllerInput {
 					engine.isAutoShutdownEnabled = false
 					engine.stoppedHandler = { [weak self] reason in
 						LogStore.shared.append(level: 2, "Haptics engine stopped: \(reason.rawValue)")
-						DispatchQueue.main.async { self?.stopHaptics() }
+						self?.hapticsQueue.async { self?.stopHaptics() }
 					}
-					engine.resetHandler = { [weak self] in DispatchQueue.main.async { self?.stopHaptics() } }
+					engine.resetHandler = { [weak self] in self?.hapticsQueue.async { self?.stopHaptics() } }
 					try engine.start()
 					let event = CHHapticEvent(eventType: .hapticContinuous, parameters: [
 						CHHapticEventParameter(parameterID: .hapticIntensity, value: 1.0),
@@ -321,6 +340,7 @@ final class ControllerInput {
 				hapticEngines = engines
 				rumblePlayers = players
 				rumblePlaying = Array(repeating: false, count: players.count)
+				rumbleSent = Array(repeating: -1, count: players.count)
 				LogStore.shared.append(level: 4, "Haptics: ready (\(localities.map { $0.rawValue }.joined(separator: ", ")))")
 				return
 			} catch {
@@ -333,15 +353,22 @@ final class ControllerInput {
 	private func stopHaptics() {
 		rumblePlayers.removeAll()
 		rumblePlaying.removeAll()
+		rumbleSent.removeAll()
 		hapticEngines.forEach { $0.stop() }
 		hapticEngines.removeAll()
 	}
 
-	/// left = low frequency (left handle), right = high frequency (right handle), 0...255. Main queue.
+	/// left = low frequency (left handle), right = high frequency (right handle), 0...255.
+	/// Call from the main queue; the work happens on hapticsQueue.
 	func rumble(left: UInt8, right: UInt8) {
+		let haptics = controller?.haptics
+		hapticsQueue.async { [weak self] in self?.applyRumble(left: left, right: right, haptics: haptics) }
+	}
+
+	private func applyRumble(left: UInt8, right: UInt8, haptics: GCDeviceHaptics?) {
 		if rumblePlayers.isEmpty {
 			guard left > 0 || right > 0 else { return }
-			startHaptics()
+			startHaptics(haptics)
 		}
 		for (i, player) in rumblePlayers.enumerated() {
 			// One engine (both handles): follow the stronger motor
@@ -352,9 +379,14 @@ final class ControllerInput {
 					if rumblePlaying[i] {
 						try player.stop(atTime: CHHapticTimeImmediate)
 						rumblePlaying[i] = false
+						rumbleSent[i] = -1
 					}
 				} else {
-					try player.sendParameters([CHHapticDynamicParameter(parameterID: .hapticIntensityControl, value: value, relativeTime: 0)], atTime: CHHapticTimeImmediate)
+					// Skip updates that barely change the strength: each one is a call into tvOS
+					if !rumblePlaying[i] || abs(value - rumbleSent[i]) >= 0.02 {
+						try player.sendParameters([CHHapticDynamicParameter(parameterID: .hapticIntensityControl, value: value, relativeTime: 0)], atTime: CHHapticTimeImmediate)
+						rumbleSent[i] = value
+					}
 					if !rumblePlaying[i] {
 						try player.start(atTime: CHHapticTimeImmediate)
 						rumblePlaying[i] = true

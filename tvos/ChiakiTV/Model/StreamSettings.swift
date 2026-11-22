@@ -62,6 +62,8 @@ final class StreamSettings: ObservableObject {
 	@Published var codec: VideoCodec { didSet { defaults.set(codec.rawValue, forKey: "codec") } }
 	@Published var bitrate: Int { didSet { defaults.set(bitrate, forKey: "bitrate") } } // 0 = automatic
 	@Published var psnAccountID: String { didSet { defaults.set(psnAccountID, forKey: "psnAccountID") } }
+	/// Show frames on an even cadence (about one frame of extra latency) instead of as soon as they arrive
+	@Published var smoothPlayback: Bool { didSet { defaults.set(smoothPlayback, forKey: "smoothPlayback") } }
 	@Published var touchpadMode: TouchpadMode { didSet { defaults.set(touchpadMode.rawValue, forKey: "touchpadMode") } }
 
 	init() {
@@ -72,6 +74,7 @@ final class StreamSettings: ObservableObject {
 		codec = (defaults.object(forKey: "codec") as? Int).flatMap(VideoCodec.init(rawValue:)) ?? .h265
 		bitrate = defaults.integer(forKey: "bitrate")
 		psnAccountID = defaults.string(forKey: "psnAccountID") ?? ""
+		smoothPlayback = defaults.bool(forKey: "smoothPlayback")
 		touchpadMode = TouchpadMode(rawValue: defaults.integer(forKey: "touchpadMode")) ?? .clicksOnly
 	}
 

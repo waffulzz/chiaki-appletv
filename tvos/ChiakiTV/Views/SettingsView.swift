@@ -19,6 +19,11 @@ struct SettingsView: View {
 					options: [(0, "Automatic (\(settings.resolution.defaultBitrate / 1000) Mbps)")]
 						+ [5000, 10000, 15000, 20000, 30000, 40000, 50000].map { ($0, "\($0 / 1000) Mbps") })
 			}
+			Section {
+				Toggle("Smooth Playback", isOn: $settings.smoothPlayback)
+			} footer: {
+				Text("Shows frames at an even pace so a frame that arrives late doesn't cause a stutter. Adds about one frame of latency. For 30 fps games, keep Frame Rate at 60 fps: the console still sends only the game's 30 frames, but each one is picked up sooner.")
+			}
 			Section("PSN") {
 				TextField("Account-ID (base64)", text: $settings.psnAccountID)
 					.textInputAutocapitalization(.never)

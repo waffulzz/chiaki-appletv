@@ -8,16 +8,22 @@ import UIKit
 /// to exercise the decode path without a console. Launch with
 ///   -ChiakiTestVideo /path/to/file.h264   (or .h265 / .hevc)
 /// The file must contain access unit delimiters (x264/x265 "aud=1").
+/// Optional: -ChiakiTestSmooth YES (frame pacing), -ChiakiTestJitter YES (30 fps with random late frames).
 final class VideoTestViewController: UIViewController {
 	private let renderer: VideoRenderer
 	private let units: [Data]
 	private var index = 0
 	private var link: CADisplayLink?
 	private var failures = 0
+	private let jitter: Bool
+	private var tickCount = 0
+	private var holdTicks = 0
 
 	init(path: String) {
 		let hevc = path.hasSuffix(".h265") || path.hasSuffix(".hevc")
-		renderer = VideoRenderer(hevc: hevc)
+		let defaults = UserDefaults.standard
+		jitter = defaults.bool(forKey: "ChiakiTestJitter")
+		renderer = VideoRenderer(hevc: hevc, smooth: defaults.bool(forKey: "ChiakiTestSmooth"), fps: jitter ? 30 : 60)
 		let data = (try? Data(contentsOf: URL(fileURLWithPath: path))) ?? Data()
 		units = Self.splitAccessUnits(data, hevc: hevc)
 		super.init(nibName: nil, bundle: nil)
@@ -43,6 +49,13 @@ final class VideoTestViewController: UIViewController {
 
 	@objc private func tick() {
 		guard !units.isEmpty else { return }
+		if jitter {
+			// 30 fps (every other 60 Hz tick); now and then a frame arrives 1-2 ticks late
+			tickCount += 1
+			if holdTicks > 0 { holdTicks -= 1; return }
+			if tickCount % 2 == 1 { return }
+			if Int.random(in: 0..<8) == 0 { holdTicks = Int.random(in: 1...2); return }
+		}
 		let unit = units[index % units.count]
 		let ok = unit.withUnsafeBytes { raw in
 			renderer.submit(raw.bindMemory(to: UInt8.self).baseAddress!, raw.count)

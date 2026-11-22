@@ -33,6 +33,30 @@ final class StreamViewController: GCEventViewController {
 	override func viewDidAppear(_ animated: Bool) {
 		super.viewDidAppear(animated)
 		requestMatchingDisplayMode()
+		// Controller input goes to the stream, not UIKit, so tvOS would otherwise think the
+		// user is idle and start the screen saver, which cuts controller input off
+		UIApplication.shared.isIdleTimerDisabled = true
+		// viewWillDisappear stops forwarding; coming back without one of our menus must resume it
+		if presentedViewController == nil && !finished {
+			setMenuOpen(false)
+		}
+		if inputWatchdog == nil {
+			inputWatchdog = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in self?.checkInput() }
+		}
+	}
+
+	private var inputWatchdog: Timer?
+	private var menuOpen = false
+
+	/// Repairs controller input if it ended up off while nothing should be blocking it,
+	/// and logs what was wrong so a dropout can be diagnosed.
+	private func checkInput() {
+		guard !finished, presentedViewController == nil else { return }
+		if menuOpen || controllerUserInteractionEnabled {
+			LogStore.shared.append(level: 2, "Input watchdog: forwarding was off with no menu open, resuming")
+			setMenuOpen(false)
+		}
+		input.checkHealth()
 	}
 
 	/// Ask tvOS to switch the TV to the stream's frame rate and SDR, if the user turned on
@@ -73,6 +97,8 @@ final class StreamViewController: GCEventViewController {
 
 	override func viewWillDisappear(_ animated: Bool) {
 		super.viewWillDisappear(animated)
+		LogStore.shared.append(level: 4, "Stream view will disappear (finished: \(finished))")
+		UIApplication.shared.isIdleTimerDisabled = false
 		displayManager?.preferredDisplayCriteria = nil
 		// Hand controller input back to UIKit, otherwise the menus stop responding after the stream
 		setMenuOpen(true)
@@ -107,6 +133,13 @@ final class StreamViewController: GCEventViewController {
 
 		NotificationCenter.default.addObserver(self, selector: #selector(appDidEnterBackground),
 			name: UIApplication.didEnterBackgroundNotification, object: nil)
+		// tvOS stops delivering controller input while the app is inactive (Control Center, overlays)
+		NotificationCenter.default.addObserver(forName: UIApplication.willResignActiveNotification, object: nil, queue: .main) { _ in
+			LogStore.shared.append(level: 2, "App became inactive (tvOS overlay or Control Center): controller input paused by tvOS")
+		}
+		NotificationCenter.default.addObserver(forName: UIApplication.didBecomeActiveNotification, object: nil, queue: .main) { _ in
+			LogStore.shared.append(level: 4, "App active again")
+		}
 
 		if !session.start() {
 			finish(error: "Could not start the session. See Logs for details.")
@@ -135,6 +168,7 @@ final class StreamViewController: GCEventViewController {
 	/// While one of our menus (disconnect, keyboard, PIN) is up, the controller drives the menu
 	/// through UIKit and nothing is forwarded to the console.
 	private func setMenuOpen(_ open: Bool) {
+		menuOpen = open
 		controllerUserInteractionEnabled = open
 		input.setForwarding(!open)
 	}
@@ -225,6 +259,9 @@ final class StreamViewController: GCEventViewController {
 	private func finish(error: String?) {
 		guard !finished else { return }
 		finished = true
+		inputWatchdog?.invalidate()
+		inputWatchdog = nil
+		UIApplication.shared.isIdleTimerDisabled = false
 		setMenuOpen(true)
 		if let error { LogStore.shared.append(level: 1, "Stream ended: \(error)") }
 		statusLabel.isHidden = false

@@ -32,10 +32,66 @@ final class VideoRenderer {
 	private var lastSubmit = 0.0
 	private var decodeStart = 0.0
 
-	init(hevc: Bool) {
+	// Smooth playback (frame pacing), video thread only. Times are host-clock seconds.
+	/// When true, frames are shown on an even cadence one frame after the least-delayed frames
+	/// would arrive, so a frame that arrives up to one frame late still lands on its slot.
+	let smooth: Bool
+	/// Frame interval: the median of recent gaps between frames (late frames don't skew it).
+	/// Games often render slower than the requested stream rate.
+	private var frameInterval: Double
+	private var recentGaps: [Double] = []
+	private var lastArrival = 0.0
+	/// Frame count since the schedule was anchored, and the anchor: the earliest
+	/// (arrival - count * interval) seen, i.e. the timing of the frames the network didn't delay
+	private var frameCount = 0.0
+	private var anchor = Double.infinity
+	private var pendingLostFrames = 0
+	private var statsResyncs = 0
+
+	/// fps: the requested stream rate, used as the starting guess for the frame interval.
+	init(hevc: Bool, smooth: Bool = false, fps: Int = 60) {
 		self.hevc = hevc
+		self.smooth = smooth
+		self.frameInterval = 1.0 / Double(max(fps, 1))
 		displayLayer.videoGravity = .resizeAspect
 		displayLayer.backgroundColor = UIColor.black.cgColor
+		if smooth {
+			// Run the layer on the host clock so presentation times are host-clock times
+			let clock = CMClockGetHostTimeClock()
+			var timebase: CMTimebase?
+			CMTimebaseCreateWithSourceClock(allocator: kCFAllocatorDefault, sourceClock: clock, timebaseOut: &timebase)
+			if let timebase {
+				CMTimebaseSetTime(timebase, time: CMClockGetTime(clock))
+				CMTimebaseSetRate(timebase, rate: 1.0)
+				displayLayer.controlTimebase = timebase
+			}
+		}
+	}
+
+	/// Presentation time for a frame that finished decoding at `now` (see `smooth`).
+	private func presentationTime(now: Double) -> Double {
+		if lastArrival > 0 {
+			recentGaps.append(now - lastArrival)
+			if recentGaps.count > 31 { recentGaps.removeFirst() }
+			let median = recentGaps.sorted()[recentGaps.count / 2]
+			if recentGaps.count >= 15, median > 0.005, abs(median - frameInterval) / frameInterval > 0.1 {
+				// The real frame rate differs from what the schedule assumes: re-anchor
+				frameInterval = median
+				anchor = .infinity
+				frameCount = 0
+				statsResyncs += 1
+			}
+		}
+		lastArrival = now
+		frameCount += 1 + Double(pendingLostFrames)
+		pendingLostFrames = 0
+		let ideal = now - frameCount * frameInterval
+		if ideal < anchor {
+			anchor = ideal
+		} else {
+			anchor += 0.0005 // follow slowly if the network delay grows for good
+		}
+		return max(anchor + (frameCount + 1) * frameInterval, now)
 	}
 
 	deinit {
@@ -51,6 +107,7 @@ final class VideoRenderer {
 		if lastSubmit > 0 { statsGapMax = max(statsGapMax, now - lastSubmit) }
 		lastSubmit = now
 		statsLost += Int(max(0, framesLost))
+		pendingLostFrames += Int(max(0, framesLost))
 
 		var units: [UnsafeBufferPointer<UInt8>] = []
 		var parametersChanged = false
@@ -152,12 +209,14 @@ final class VideoRenderer {
 		var format: CMVideoFormatDescription?
 		CMVideoFormatDescriptionCreateForImageBuffer(allocator: kCFAllocatorDefault, imageBuffer: imageBuffer, formatDescriptionOut: &format)
 		guard let format else { return }
-		var timing = CMSampleTimingInfo(duration: .invalid, presentationTimeStamp: CMClockGetTime(CMClockGetHostTimeClock()), decodeTimeStamp: .invalid)
+		let now = CMClockGetTime(CMClockGetHostTimeClock())
+		let presentation = smooth ? CMTime(seconds: presentationTime(now: now.seconds), preferredTimescale: 1_000_000_000) : now
+		var timing = CMSampleTimingInfo(duration: .invalid, presentationTimeStamp: presentation, decodeTimeStamp: .invalid)
 		var sample: CMSampleBuffer?
 		CMSampleBufferCreateReadyWithImageBuffer(allocator: kCFAllocatorDefault, imageBuffer: imageBuffer,
 			formatDescription: format, sampleTiming: &timing, sampleBufferOut: &sample)
 		guard let sample else { return }
-		Self.markDisplayImmediately(sample)
+		if !smooth { Self.markDisplayImmediately(sample) }
 		renderer.enqueue(sample)
 
 		framesDecoded += 1
@@ -172,8 +231,13 @@ final class VideoRenderer {
 		guard elapsed >= 5 else { return }
 		let fps = Double(statsFrames) / elapsed
 		let avg = statsFrames > 0 ? statsDecodeTotal / Double(statsFrames) * 1000 : 0
-		LogStore.shared.append(level: 4, String(format: "Video stats: %.1f fps, decode avg %.2f ms max %.2f ms, longest gap between frames %.1f ms, frames lost %d",
-			fps, avg, statsDecodeMax * 1000, statsGapMax * 1000, statsLost))
+		var text = String(format: "Video stats: %.1f fps, decode avg %.2f ms max %.2f ms, longest gap between frames %.1f ms, frames lost %d",
+			fps, avg, statsDecodeMax * 1000, statsGapMax * 1000, statsLost)
+		if smooth {
+			text += String(format: ", smoothing: frame interval %.1f ms, re-anchored %d", frameInterval * 1000, statsResyncs)
+			statsResyncs = 0
+		}
+		LogStore.shared.append(level: 4, text)
 		statsStart = now
 		statsFrames = 0
 		statsDecodeTotal = 0
