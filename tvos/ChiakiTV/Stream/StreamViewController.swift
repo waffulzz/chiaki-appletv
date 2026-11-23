@@ -129,6 +129,8 @@ final class StreamViewController: GCEventViewController {
 		input.onQuitRequested = { [weak self] in self?.confirmQuit() }
 		session.onRumble = { [weak self] l, r in self?.input.rumble(left: l, right: r) }
 		session.onTriggerEffects = { [weak self] left, right in self?.input.applyTriggerEffects(left: left, right: right) }
+		session.onLightbar = { [weak self] r, g, b in self?.input.setLightbar(red: r, green: g, blue: b) }
+		session.onPlayerIndex = { [weak self] index in self?.input.setPlayerIndex(index) }
 		session.onEvent = { [weak self] event in self?.handle(event) }
 
 		NotificationCenter.default.addObserver(self, selector: #selector(appDidEnterBackground),

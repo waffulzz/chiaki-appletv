@@ -130,7 +130,9 @@ typedef enum {
 	CHIAKITV_EVENT_KEYBOARD_REMOTE_CLOSE = 9,
 	/// DualSense adaptive trigger effects: trigger_type_* plus 10 parameter bytes each,
 	/// in the DualSense controller's own effect format
-	CHIAKITV_EVENT_TRIGGER_EFFECTS = 10
+	CHIAKITV_EVENT_TRIGGER_EFFECTS = 10,
+	/// player_index: 0-based player number for the controller's player LEDs
+	CHIAKITV_EVENT_PLAYER_INDEX = 11
 } ChiakiTVEventType;
 
 typedef struct {
@@ -141,7 +143,8 @@ typedef struct {
 	bool pin_incorrect;
 	uint8_t rumble_left;
 	uint8_t rumble_right;
-	uint8_t led[3];
+	uint8_t led[3]; // lightbar color, red/green/blue
+	uint8_t player_index;
 	const char *nickname;
 	const char *keyboard_text; // valid during the callback only
 	uint8_t trigger_type_left;

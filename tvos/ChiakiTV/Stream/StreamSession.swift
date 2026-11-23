@@ -17,6 +17,9 @@ final class StreamSession {
 	let audio = AudioPlayer()
 	var onEvent: ((Event) -> Void)? // main thread
 	var onRumble: ((UInt8, UInt8) -> Void)? // main thread
+	/// Lightbar color (red, green, blue) and 0-based player number, main thread
+	var onLightbar: ((UInt8, UInt8, UInt8) -> Void)?
+	var onPlayerIndex: ((UInt8) -> Void)?
 	/// DualSense adaptive trigger effects (type + 10 parameter bytes per trigger), main thread
 	var onTriggerEffects: (((UInt8, [UInt8]), (UInt8, [UInt8])) -> Void)?
 
@@ -87,6 +90,12 @@ final class StreamSession {
 			case Int32(CHIAKITV_EVENT_KEYBOARD_OPEN.rawValue):
 				let text = e.keyboard_text.map { String(cString: $0) } ?? ""
 				DispatchQueue.main.async { s.onEvent?(.keyboardOpen(text: text)) }
+			case Int32(CHIAKITV_EVENT_LED_COLOR.rawValue):
+				let (r, g, b) = e.led
+				DispatchQueue.main.async { s.onLightbar?(r, g, b) }
+			case Int32(CHIAKITV_EVENT_PLAYER_INDEX.rawValue):
+				let index = e.player_index
+				DispatchQueue.main.async { s.onPlayerIndex?(index) }
 			case Int32(CHIAKITV_EVENT_TRIGGER_EFFECTS.rawValue):
 				let left = (e.trigger_type_left, bytesFromCTuple(e.trigger_left))
 				let right = (e.trigger_type_right, bytesFromCTuple(e.trigger_right))

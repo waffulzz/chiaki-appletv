@@ -37,6 +37,14 @@ final class ControllerInput {
 	/// Which touches are sent to the console (Settings › Touchpad)
 	var touchpadMode: TouchpadMode = .clicksOnly
 	private var gestureElements: [GCControllerElement] = []
+	// Lightbar and player LEDs (lightQueue). Games change the lightbar rapidly (GTA flashes red
+	// and blue for the police), and each change is a call into tvOS, so it runs off the main thread.
+	private let lightQueue = DispatchQueue(label: "chiaki.lightbar", qos: .userInitiated)
+	private var lastLightbar: (UInt8, UInt8, UInt8)?
+	/// What the controller showed before the stream, restored when it ends
+	private var originalLightColor: GCColor?
+	private var originalPlayerIndex: GCControllerPlayerIndex = .indexUnset
+
 	// Rumble (hapticsQueue only). Every update is a synchronous call into tvOS's haptics
 	// service, so it runs on its own queue to never stall the main thread or controller input.
 	private let hapticsQueue = DispatchQueue(label: "chiaki.haptics", qos: .userInitiated)
@@ -92,6 +100,9 @@ final class ControllerInput {
 		controller = c
 		LogStore.shared.append(level: 4, "Controller: \(c.vendorName ?? "unknown") (\(c.extendedGamepad != nil ? "extended" : "micro"))")
 		guard let gp = c.extendedGamepad else { return }
+		originalLightColor = c.light?.color
+		originalPlayerIndex = c.playerIndex
+		lastLightbar = nil
 		disableSystemGestures(c)
 		c.handlerQueue = inputQueue
 		gp.valueChangedHandler = { [weak self] gp, element in self?.update(gp, element: element) }
@@ -99,6 +110,13 @@ final class ControllerInput {
 
 	private func detach() {
 		AdaptiveTriggers.reset(controller?.extendedGamepad)
+		if let c = controller, c.extendedGamepad != nil {
+			let color = originalLightColor, index = originalPlayerIndex
+			lightQueue.sync {
+				if let color { c.light?.color = color }
+				c.playerIndex = index
+			}
+		}
 		controller?.extendedGamepad?.valueChangedHandler = nil
 		controller?.handlerQueue = .main
 		for e in gestureElements { e.preferredSystemGestureState = .enabled }
@@ -250,6 +268,27 @@ final class ControllerInput {
 				pendingTouches[i] = (px, py)
 			}
 		}
+	}
+
+	// MARK: - Lightbar and player LEDs
+
+	/// Lightbar color from the console. Main queue; applied on lightQueue.
+	func setLightbar(red: UInt8, green: UInt8, blue: UInt8) {
+		if let last = lastLightbar, last == (red, green, blue) { return }
+		lastLightbar = (red, green, blue)
+		guard let light = controller?.light else { return }
+		lightQueue.async {
+			light.color = GCColor(red: Float(red) / 255, green: Float(green) / 255, blue: Float(blue) / 255)
+		}
+	}
+
+	/// 0-based player number from the console, shown on the controller's player LEDs. Main queue.
+	func setPlayerIndex(_ index: UInt8) {
+		guard let c = controller, c.extendedGamepad != nil else { return }
+		let players: [GCControllerPlayerIndex] = [.index1, .index2, .index3, .index4]
+		let value = Int(index) < players.count ? players[Int(index)] : .indexUnset
+		lightQueue.async { c.playerIndex = value }
+		LogStore.shared.append(level: 4, "Player LEDs: player \(Int(index) + 1)")
 	}
 
 	// MARK: - Adaptive triggers

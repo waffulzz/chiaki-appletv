@@ -377,6 +377,10 @@ static void session_event_cb(ChiakiEvent *event, void *user)
 			e.type = CHIAKITV_EVENT_LED_COLOR;
 			memcpy(e.led, event->led_state, sizeof(e.led));
 			break;
+		case CHIAKI_EVENT_PLAYER_INDEX:
+			e.type = CHIAKITV_EVENT_PLAYER_INDEX;
+			e.player_index = event->player_index;
+			break;
 		default:
 			return;
 	}
